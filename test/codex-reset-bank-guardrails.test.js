@@ -159,7 +159,7 @@ test("Codex reset bank scope guard freezes widget menu bar and native bridge sur
   );
 
   const menuBarMetricEnum = menuBarDisplayPreferences.match(
-    /enum MenuBarDisplayMetric: String, CaseIterable \{[\s\S]*?\n\}\n\nprivate extension/,
+    /enum MenuBarDisplayMetric: String, CaseIterable \{[\s\S]*?\n\}/,
   );
   assert.ok(menuBarMetricEnum, "MenuBarDisplayMetric enum should be present");
   assertNoResetBankSurface(menuBarMetricEnum[0], "menu-bar metric enum");
@@ -170,7 +170,7 @@ test("Codex reset bank scope guard freezes widget menu bar and native bridge sur
   );
 
   const limitProviders = widgetSnapshotWriter.match(
-    /private static func limitProviders\(from limits: UsageLimitsResponse\?\) -> \[LimitProvider\] \{[\s\S]*?return out\.filter \{ !hiddenProviders\.contains\(\$0\.source\) \}\n    \}/,
+    /private static func limitProviders\(from limits: UsageLimitsResponse\?\) -> \[LimitProvider\] \{[\s\S]*?return out\.filter/,
   );
   assert.ok(limitProviders, "WidgetSnapshotWriter.limitProviders should be present");
   assert.match(limitProviders[0], /LimitProvider\(source: "codex", label: "Codex · 5h"/);

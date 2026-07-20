@@ -303,6 +303,9 @@ const PROVIDER_ICON_MAP = {
   "PI-COPILOT": PiIcon,
   ROOCODE: RoocodeIcon,
   ZED: ZedIcon,
+  TRAE: TraeIcon,
+  "TRAE-SOLO": TraeIcon,
+  QODER: QoderIcon,
 };
 
 // Multi-color brand SVG assets in /public/brand-logos/. Only logos that have
@@ -321,6 +324,8 @@ const PROVIDER_LOGO_MAP = {
   MIMO: "/brand-logos/mimo.svg",
   OPENCLAW: "/brand-logos/openclaw.svg",
   OPENCODE: "/brand-logos/opencode.svg",
+  TRAE: "/brand-logos/trae.png",
+  "TRAE-SOLO": "/brand-logos/trae.png",
 };
 
 // AnythingLLM publishes this compact mark in white. Keep the official asset
@@ -329,6 +334,23 @@ const PROVIDER_LOGO_MAP = {
 const PROVIDER_LOGO_CLASS_MAP = {
   ANYTHINGLLM: "brightness-0 dark:brightness-100",
 };
+
+function TraeIcon({ size = 16, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M4 4h16v3H13.5v13h-3V7H4V4z" />
+    </svg>
+  );
+}
+
+function QoderIcon({ size = 16, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="M16 16l5 5" />
+    </svg>
+  );
+}
 
 function PlaceholderIcon({ size = 16, className = "" }) {
   return (

@@ -1,4 +1,4 @@
-const ACCOUNT_LEVEL_SOURCES = new Set(["cursor"]);
+const ACCOUNT_LEVEL_SOURCES = new Set(["cursor", "trae"]);
 
 function normalizeSource(value) {
   return String(value || "").trim().toLowerCase();

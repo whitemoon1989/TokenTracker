@@ -4,7 +4,7 @@ const path = require("node:path");
 const readline = require("node:readline");
 
 const crypto = require("node:crypto");
-const { ensureDir } = require("./fs");
+const { ensureDir, readJson, writeJson } = require("./fs");
 const { readSqliteJsonRows, readSqliteJsonRowsAsync } = require("./sqlite-reader");
 const wsl = require("./wsl-probe");
 const { resolveInstallPaths } = require("./install-resolver");
@@ -4176,6 +4176,538 @@ async function parseCursorApiIncremental({
   return { recordsProcessed: total, eventsAggregated, bucketsQueued };
 }
 
+function normalizeTraeModel(name) {
+  const n = String(name || "").trim();
+  switch (n) {
+    case "GPT-5.4": return "gpt-5.4";
+    case "GPT-5.3-Codex":
+    case "GPT-5.3 Codex": return "gpt-5.3-codex";
+    case "GPT-5.3": return "gpt-5.3";
+    case "GPT-5.2-Codex":
+    case "GPT-5.2 Codex": return "gpt-5.2-codex";
+    case "GPT-5.2": return "gpt-5.2";
+    case "GPT-5.1-Codex":
+    case "GPT-5.1 Codex": return "gpt-5.1-codex";
+    case "GPT-5.1": return "gpt-5.1";
+    case "Gemini 3.1 Pro": return "gemini-3.1-pro";
+    case "Gemini 3.1": return "gemini-3.1";
+    case "GLM 5.1":
+    case "GLM-5.1": return "glm-5.1";
+    case "Claude Sonnet 4.6":
+    case "Claude-Sonnet-4.6": return "claude-sonnet-4.6";
+    case "Claude Sonnet 4.5":
+    case "Claude-Sonnet-4.5": return "claude-sonnet-4.5";
+    default: return n;
+  }
+}
+
+function providerForTraeModel(name) {
+  const n = String(name || "").toLowerCase();
+  if (n.includes("gpt")) return "openai";
+  if (n.includes("claude")) return "anthropic";
+  if (n.includes("gemini")) return "google";
+  if (n.includes("glm")) return "zhipu";
+  return "trae";
+}
+
+async function parseTraeIncremental({
+  manifest,
+  cursors,
+  queuePath,
+  source,
+  cacheDir,
+  onProgress,
+}) {
+  await ensureDir(path.dirname(queuePath));
+  const defaultSource = normalizeSourceInput(source) || "trae";
+  const hourlyState = normalizeHourlyState(cursors?.hourly);
+  const touchedBuckets = new Set();
+
+  const lastTs = cursors?.trae?.lastRecordTimestamp || 0;
+  let latestTs = lastTs;
+  let eventsAggregated = 0;
+  const cb = typeof onProgress === "function" ? onProgress : null;
+
+  const activeSessions = (manifest?.sessions || []).filter((s) => s.usage_time > lastTs && s.usage_time > 0);
+  const total = activeSessions.length;
+
+  if (total === 0) {
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
+
+  const pathGroups = {};
+  for (const s of activeSessions) {
+    if (!pathGroups[s.artifact_path]) {
+      pathGroups[s.artifact_path] = [];
+    }
+    pathGroups[s.artifact_path].push(s);
+  }
+
+  let processedCount = 0;
+  for (const [relPath, group] of Object.entries(pathGroups)) {
+    const fullPath = path.join(cacheDir, relPath);
+    const sessionsArray = await readJson(fullPath);
+    if (!Array.isArray(sessionsArray)) {
+      processedCount += group.length;
+      continue;
+    }
+
+    const sessionMap = new Map();
+    for (const s of sessionsArray) {
+      if (s.session_id) {
+        sessionMap.set(s.session_id, s);
+      }
+    }
+
+    for (const item of group) {
+      processedCount += 1;
+      const s = sessionMap.get(item.session_id);
+      if (!s) continue;
+
+      const usageTime = s.usage_time || 0;
+      if (usageTime <= 0) continue;
+
+      const extra = s.extra_info || {};
+      const input = Number(extra.input_token || 0);
+      const output = Number(extra.output_token || 0);
+      const cache_read = Number(extra.cache_read_token || 0);
+      const cache_write = Number(extra.cache_write_token || 0);
+
+      if (input + output + cache_read + cache_write === 0) continue;
+
+      const dateStr = new Date(usageTime * 1000).toISOString();
+      const bucketStart = toUtcHalfHourStart(dateStr);
+      if (!bucketStart) continue;
+
+      const modelRaw = s.model_name || "";
+      const mode = s.mode || "";
+      let modelId;
+      if (modelRaw) {
+        modelId = normalizeTraeModel(modelRaw);
+      } else if (mode) {
+        modelId = `trae-${mode.toLowerCase()}`;
+      } else {
+        modelId = "trae-unknown";
+      }
+
+      const delta = {
+        input_tokens: input,
+        output_tokens: output,
+        cached_input_tokens: cache_read,
+        cache_creation_input_tokens: cache_write,
+        reasoning_output_tokens: 0,
+        conversation_count: 1,
+        total_tokens: input + output,
+        billable_total_tokens: input + output,
+      };
+
+      const bucket = getHourlyBucket(hourlyState, defaultSource, modelId, bucketStart);
+      addTotals(bucket.totals, delta);
+      touchedBuckets.add(bucketKey(defaultSource, modelId, bucketStart));
+
+      eventsAggregated += 1;
+
+      if (usageTime > latestTs) {
+        latestTs = usageTime;
+      }
+
+      if (cb && (processedCount % 50 === 0 || processedCount === total)) {
+        cb({
+          index: processedCount,
+          total,
+          eventsAggregated,
+          bucketsQueued: touchedBuckets.size,
+        });
+      }
+    }
+  }
+
+  const bucketsQueued = touchedBuckets.size > 0 
+    ? await enqueueTouchedBuckets({ queuePath, hourlyState, touchedBuckets })
+    : 0;
+  hourlyState.updatedAt = new Date().toISOString();
+  cursors.hourly = hourlyState;
+
+  if (!cursors.trae) cursors.trae = {};
+  if (latestTs && latestTs !== lastTs) {
+    cursors.trae.lastRecordTimestamp = latestTs;
+  }
+  cursors.trae.updatedAt = new Date().toISOString();
+
+  return { recordsProcessed: total, eventsAggregated, bucketsQueued };
+}
+
+// ---------------------------------------------------------------------------
+// Qoder token tracking (reads from agents.db or local.db)
+// ---------------------------------------------------------------------------
+
+function resolveQoderPaths(env = process.env) {
+  const os = require("node:os");
+  const home = os.homedir();
+  const platform = process.platform;
+  const pathForPlatform = platform === "win32" ? path.win32 : path.posix;
+
+  let appData;
+  let librarySupport;
+  if (platform === "win32") {
+    appData = (typeof env.APPDATA === "string" && env.APPDATA.trim()) || pathForPlatform.join(home, "AppData", "Roaming");
+  } else if (platform === "darwin") {
+    librarySupport = pathForPlatform.join(home, "Library", "Application Support");
+  } else {
+    const xdg = (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()) || pathForPlatform.join(home, ".config");
+    appData = xdg;
+    librarySupport = xdg;
+  }
+
+  // QoderWork paths
+  const workCandidateDirs = [
+    "QoderWork CN",
+    "QoderWork"
+  ];
+  let workDbPath = null;
+  for (const dir of workCandidateDirs) {
+    let p;
+    if (platform === "win32") {
+      p = pathForPlatform.join(appData, dir, "data", "agents.db");
+    } else {
+      p = pathForPlatform.join(librarySupport || appData, dir, "data", "agents.db");
+    }
+    if (fssync.existsSync(p)) {
+      workDbPath = p;
+      break;
+    }
+  }
+
+  // Qoder IDE paths
+  const ideCandidateDirs = [
+    "Qoder"
+  ];
+  let ideDbPath = null;
+  for (const dir of ideCandidateDirs) {
+    let p;
+    if (platform === "win32") {
+      p = pathForPlatform.join(appData, dir, "SharedClientCache", "cache", "db", "local.db");
+    } else {
+      p = pathForPlatform.join(librarySupport || appData, dir, "SharedClientCache", "cache", "db", "local.db");
+    }
+    if (fssync.existsSync(p)) {
+      ideDbPath = p;
+      break;
+    }
+  }
+
+  return {
+    workDbPath,
+    ideDbPath,
+  };
+}
+
+function normalizeQoderModel(name) {
+  const n = String(name || "").trim().toLowerCase();
+  switch (n) {
+    case "kmodel": return "qoder-kmodel";
+    case "qmodel": return "qoder-qmodel";
+    case "qmodel_latest": return "qoder-qmodel-latest";
+    case "qmodel_preview": return "qoder-qmodel-preview";
+    case "gm51model": return "qoder-gm51model";
+    default: return n || "qoder-agent";
+  }
+}
+
+async function parseQoderIncremental({
+  cursors,
+  queuePath,
+  onProgress,
+  env,
+  sqliteOptions,
+} = {}) {
+  await ensureDir(path.dirname(queuePath));
+  const qoderState = cursors.qoder && typeof cursors.qoder === "object" ? cursors.qoder : {};
+  const paths = resolveQoderPaths(env || process.env);
+
+  let recordsProcessed = 0;
+  let eventsAggregated = 0;
+  const touchedBuckets = new Set();
+  const hourlyState = normalizeHourlyState(cursors?.hourly);
+  const cb = typeof onProgress === "function" ? onProgress : null;
+
+  // 1. Process QoderWork agents.db
+  if (paths.workDbPath && fssync.existsSync(paths.workDbPath)) {
+    const lastWorkCreatedAt = Number(qoderState.lastWorkCreatedAt) || 0;
+    const lastWorkIds = Array.isArray(qoderState.lastWorkIds) ? qoderState.lastWorkIds : [];
+    
+    const sql = `
+      SELECT m.id, m.role, m.metadata, m.created_at, s.model_level
+      FROM messages m
+      LEFT JOIN sub_chats s ON m.sub_chat_id = s.id
+      WHERE m.role = 'assistant' AND m.created_at >= ${lastWorkCreatedAt}
+      ORDER BY m.created_at ASC
+    `;
+
+    let rows = [];
+    try {
+      const snap = snapshotSqliteDb(paths.workDbPath);
+      try {
+        rows = readSqliteJsonRows(snap.path, sql, {
+          label: "QoderWork",
+          maxBuffer: 10 * 1024 * 1024,
+          timeout: 15_000,
+          ...sqliteOptions,
+        });
+      } finally {
+        snap.cleanup();
+      }
+    } catch (err) {
+      process.stderr.write(`  [tokentracker] Failed to read QoderWork database: ${err.message}\n`);
+    }
+
+    if (rows.length > 0) {
+      let maxCreatedAt = lastWorkCreatedAt;
+      const nextWorkIds = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        recordsProcessed++;
+
+        if (row.created_at === lastWorkCreatedAt && lastWorkIds.includes(row.id)) {
+          continue;
+        }
+
+        let meta;
+        try {
+          meta = JSON.parse(row.metadata);
+        } catch (_e) {
+          continue;
+        }
+
+        if (!meta) continue;
+
+        const input = toNonNegativeInt(meta.inputTokens ?? meta.input_tokens ?? meta.prompt_tokens ?? meta.promptTokens ?? 0);
+        const output = toNonNegativeInt(meta.outputTokens ?? meta.output_tokens ?? meta.completion_tokens ?? meta.completionTokens ?? 0);
+        const cacheRead = toNonNegativeInt(meta.cacheReadTokens ?? meta.cache_read_tokens ?? meta.cacheRead ?? meta.cache_read ?? 0);
+        const cacheWrite = toNonNegativeInt(meta.cacheWriteTokens ?? meta.cache_write_tokens ?? meta.cacheWrite ?? meta.cacheWrite ?? meta.cacheCreationInputTokens ?? 0);
+
+        if (input + output + cacheRead + cacheWrite === 0) continue;
+
+        let createdMs = Number(row.created_at);
+        if (createdMs < 10000000000) {
+          createdMs = createdMs * 1000;
+        }
+        const tsIso = new Date(createdMs).toISOString();
+        const bucketStart = toUtcHalfHourStart(tsIso);
+        if (!bucketStart) continue;
+
+        const model = normalizeQoderModel(row.model_level);
+
+        const delta = {
+          input_tokens: input,
+          cached_input_tokens: cacheRead,
+          cache_creation_input_tokens: cacheWrite,
+          output_tokens: output,
+          reasoning_output_tokens: 0,
+          total_tokens: input + output + cacheRead + cacheWrite,
+          conversation_count: 1,
+        };
+
+        const bucket = getHourlyBucket(hourlyState, "qoder", model, bucketStart);
+        addTotals(bucket.totals, delta);
+        touchedBuckets.add(bucketKey("qoder", model, bucketStart));
+        eventsAggregated++;
+
+        if (row.created_at > maxCreatedAt) {
+          maxCreatedAt = row.created_at;
+          nextWorkIds.length = 0;
+          nextWorkIds.push(row.id);
+        } else if (row.created_at === maxCreatedAt) {
+          nextWorkIds.push(row.id);
+        }
+
+        if (cb && (recordsProcessed % 50 === 0 || recordsProcessed === rows.length)) {
+          cb({
+            index: recordsProcessed,
+            total: rows.length,
+            recordsProcessed,
+            eventsAggregated,
+            bucketsQueued: touchedBuckets.size,
+          });
+        }
+      }
+
+      qoderState.lastWorkCreatedAt = maxCreatedAt;
+      qoderState.lastWorkIds = maxCreatedAt === lastWorkCreatedAt ? [...new Set([...lastWorkIds, ...nextWorkIds])] : nextWorkIds;
+    }
+  }
+
+  // 2. Process Qoder IDE local.db
+  if (paths.ideDbPath && fssync.existsSync(paths.ideDbPath)) {
+    const lastIdeCreatedAt = Number(qoderState.lastIdeCreatedAt) || 0;
+    const lastIdeIds = Array.isArray(qoderState.lastIdeIds) ? qoderState.lastIdeIds : [];
+
+    let cols = [];
+    try {
+      cols = readSqliteJsonRows(paths.ideDbPath, "PRAGMA table_info(chat_message)", {
+        label: "QoderIDEProbe",
+        timeout: 5_000,
+        ...sqliteOptions,
+      });
+    } catch (_e) {}
+
+    const colNames = new Set(cols.map(c => String(c.name).toLowerCase()));
+    
+    if (colNames.has("token_info")) {
+      let timeCol = null;
+      if (colNames.has("gmt_create")) timeCol = "gmt_create";
+      else if (colNames.has("created_at")) timeCol = "created_at";
+      else if (colNames.has("create_time")) timeCol = "create_time";
+      else if (colNames.has("timestamp")) timeCol = "timestamp";
+      else if (colNames.has("time")) timeCol = "time";
+
+      let modelCol = null;
+      if (colNames.has("model")) modelCol = "model";
+      else if (colNames.has("model_name")) modelCol = "model_name";
+
+      let idCol = "id";
+      if (colNames.has("message_id")) idCol = "message_id";
+
+      const selectFields = [idCol, "token_info"];
+      if (timeCol) selectFields.push(timeCol);
+      if (modelCol) selectFields.push(modelCol);
+
+      const timeWhere = timeCol ? `WHERE ${timeCol} >= ${lastIdeCreatedAt}` : "";
+      const orderBy = timeCol ? `ORDER BY ${timeCol} ASC` : "";
+      
+      const sql = `
+        SELECT ${selectFields.join(", ")}
+        FROM chat_message
+        ${timeWhere}
+        ${orderBy}
+      `;
+
+      let rows = [];
+      try {
+        const snap = snapshotSqliteDb(paths.ideDbPath);
+        try {
+          rows = readSqliteJsonRows(snap.path, sql, {
+            label: "QoderIDE",
+            maxBuffer: 10 * 1024 * 1024,
+            timeout: 15_000,
+            ...sqliteOptions,
+          });
+        } finally {
+          snap.cleanup();
+        }
+      } catch (err) {
+        process.stderr.write(`  [tokentracker] Failed to read Qoder IDE database: ${err.message}\n`);
+      }
+
+      if (rows.length > 0) {
+        let maxCreatedAt = lastIdeCreatedAt;
+        const nextIdeIds = [];
+
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          recordsProcessed++;
+
+          const rowId = String(row[idCol] || row.id || i);
+          const rowTime = timeCol ? Number(row[timeCol] || 0) : 0;
+
+          if (timeCol && rowTime === lastIdeCreatedAt && lastIdeIds.includes(rowId)) {
+            continue;
+          }
+
+          let tokenInfo;
+          try {
+            tokenInfo = JSON.parse(row.token_info);
+          } catch (_e) {
+            continue;
+          }
+
+          if (!tokenInfo) continue;
+
+          const input = toNonNegativeInt(tokenInfo.inputTokens ?? tokenInfo.input_tokens ?? tokenInfo.prompt_tokens ?? tokenInfo.promptTokens ?? 0);
+          const output = toNonNegativeInt(tokenInfo.outputTokens ?? tokenInfo.output_tokens ?? tokenInfo.completion_tokens ?? tokenInfo.completionTokens ?? 0);
+          const cacheRead = toNonNegativeInt(tokenInfo.cacheReadTokens ?? tokenInfo.cache_read_tokens ?? tokenInfo.cacheRead ?? tokenInfo.cache_read ?? 0);
+          const cacheWrite = toNonNegativeInt(tokenInfo.cacheWriteTokens ?? tokenInfo.cache_write_tokens ?? tokenInfo.cacheWrite ?? tokenInfo.cacheWrite ?? tokenInfo.cacheCreationInputTokens ?? 0);
+
+          if (input + output + cacheRead + cacheWrite === 0) continue;
+
+          let createdMs = rowTime;
+          if (createdMs > 0 && createdMs < 10000000000) {
+            createdMs = createdMs * 1000;
+          }
+          if (createdMs === 0) {
+            try {
+              createdMs = fssync.statSync(paths.ideDbPath).mtimeMs;
+            } catch (_e) {
+              createdMs = Date.now();
+            }
+          }
+
+          const tsIso = new Date(createdMs).toISOString();
+          const bucketStart = toUtcHalfHourStart(tsIso);
+          if (!bucketStart) continue;
+
+          const rawModel = modelCol ? row[modelCol] : (tokenInfo.model || tokenInfo.model_name || "qoder-agent");
+          const model = normalizeQoderModel(rawModel);
+
+          const delta = {
+            input_tokens: input,
+            cached_input_tokens: cacheRead,
+            cache_creation_input_tokens: cacheWrite,
+            output_tokens: output,
+            reasoning_output_tokens: 0,
+            total_tokens: input + output + cacheRead + cacheWrite,
+            conversation_count: 1,
+          };
+
+          const bucket = getHourlyBucket(hourlyState, "qoder", model, bucketStart);
+          addTotals(bucket.totals, delta);
+          touchedBuckets.add(bucketKey("qoder", model, bucketStart));
+          eventsAggregated++;
+
+          if (timeCol) {
+            if (rowTime > maxCreatedAt) {
+              maxCreatedAt = rowTime;
+              nextIdeIds.length = 0;
+              nextIdeIds.push(rowId);
+            } else if (rowTime === maxCreatedAt) {
+              nextIdeIds.push(rowId);
+            }
+          }
+
+          if (cb && (recordsProcessed % 50 === 0 || recordsProcessed === rows.length)) {
+            cb({
+              index: recordsProcessed,
+              total: rows.length,
+              recordsProcessed,
+              eventsAggregated,
+              bucketsQueued: touchedBuckets.size,
+            });
+          }
+        }
+
+        if (timeCol) {
+          qoderState.lastIdeCreatedAt = maxCreatedAt;
+          qoderState.lastIdeIds = maxCreatedAt === lastIdeCreatedAt ? [...new Set([...lastIdeIds, ...nextIdeIds])] : nextIdeIds;
+        }
+      }
+    }
+  }
+
+  const bucketsQueued = touchedBuckets.size > 0
+    ? await enqueueTouchedBuckets({ queuePath, hourlyState, touchedBuckets })
+    : 0;
+
+  const updatedAt = new Date().toISOString();
+  hourlyState.updatedAt = updatedAt;
+  cursors.hourly = hourlyState;
+
+  qoderState.updatedAt = updatedAt;
+  cursors.qoder = qoderState;
+
+  return { recordsProcessed, eventsAggregated, bucketsQueued };
+}
+
 // ---------------------------------------------------------------------------
 // Kiro token tracking (reads from devdata.sqlite or tokens_generated.jsonl)
 // ---------------------------------------------------------------------------
@@ -7406,10 +7938,12 @@ function resolveKilocodeRoots(env = process.env) {
       path.join(appData, "CodeBuddy"),
       path.join(appData, "Windsurf"),
       path.join(appData, "VSCodium"),
+      path.join(appData, "Trae"),
+      path.join(appData, "Trae CN"),
     ];
     const wslRoots = [];
     if (wsl.shouldProbeWsl(env)) {
-      for (const ide of ["Code", "Code - Insiders", "Cursor", "CodeBuddy", "Windsurf", "VSCodium"]) {
+      for (const ide of ["Code", "Code - Insiders", "Cursor", "CodeBuddy", "Windsurf", "VSCodium", "Trae", "Trae CN"]) {
         const wslDir = wsl.discoverWslHome(`.config/${ide}`, { env });
         if (wslDir) wslRoots.push(wslDir);
       }
@@ -7430,6 +7964,8 @@ function resolveKilocodeRoots(env = process.env) {
       path.join(xdg, "CodeBuddy"),
       path.join(xdg, "Windsurf"),
       path.join(xdg, "VSCodium"),
+      path.join(xdg, "Trae"),
+      path.join(xdg, "Trae CN"),
     );
   }
   return candidates;
@@ -13227,4 +13763,14 @@ module.exports = {
   parseAntigravityIncremental,
   estimateAntigravityTokens,
   isCjkCodePoint,
+
+  // Trae
+  parseTraeIncremental,
+  normalizeTraeModel,
+  providerForTraeModel,
+
+  // Qoder
+  resolveQoderPaths,
+  normalizeQoderModel,
+  parseQoderIncremental,
 };

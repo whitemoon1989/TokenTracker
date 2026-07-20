@@ -90,7 +90,7 @@ AS $func$
   ),
   -- Account-level source list — keep in sync with src/lib/source-metadata.js.
   cfg AS (
-    SELECT ARRAY['cursor']::text[] AS account_sources
+    SELECT ARRAY['cursor','trae']::text[] AS account_sources
   ),
   -- Stage 1: canonicalize to the raw hour grain.
   hourly AS (

@@ -91,8 +91,8 @@ function runRetroValidation({ root = ROOT } = {}) {
 
     for (const fileName of listRetrosForRepo(repoDirPath)) {
       const fullPath = path.join(repoDirPath, fileName);
-      const relPath = path.join("docs", "retrospective", repo, fileName);
-      const relPathFromRetro = path.join(repo, fileName);
+      const relPath = path.join("docs", "retrospective", repo, fileName).replace(/\\/g, "/");
+      const relPathFromRetro = path.join(repo, fileName).replace(/\\/g, "/");
       const text = readText(fullPath);
       const fm = parseFrontmatter(text);
 

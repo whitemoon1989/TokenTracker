@@ -1925,7 +1925,8 @@ function isAntigravityCommandLine(command) {
     lower.includes("/antigravity/") ||
     lower.includes("/antigravity.app/") ||
     lower.includes("\\antigravity\\") ||
-    /--override_ide_name(?:=|\s+)["']?antigravity\b/i.test(raw);
+    /--override_ide_name(?:=|\s+)["']?antigravity\b/i.test(raw) ||
+    lower.includes("--standalone");
 
   return hasLangServerBinary && hasAntigravityMarker;
 }
@@ -1936,32 +1937,94 @@ function extractCommandFlag(command, flag) {
   return match?.[1] || null;
 }
 
-async function detectAntigravityProcess({ commandRunner } = {}) {
-  const result = await runCommand(commandRunner, "/bin/ps", ["-ax", "-o", "pid=,command="], {
-    timeout: 4000,
-  });
-  const lines = String(result?.stdout || "").split("\n");
+async function detectAntigravityProcess({ commandRunner, platform = process.platform } = {}) {
+  let candidates = [];
 
-  let sawProcess = false;
-  for (const line of lines) {
-    const parsed = parseProcessLine(line);
-    if (!parsed) continue;
-    if (!isAntigravityCommandLine(parsed.command)) continue;
-    sawProcess = true;
-    const csrfToken = extractCommandFlag(parsed.command, "--csrf_token") || null;
-    const extensionPort = extractFirstNumber(extractCommandFlag(parsed.command, "--extension_server_port"));
-    return {
-      configured: true,
-      pid: parsed.pid,
-      csrfToken,
-      extensionPort: Number.isFinite(extensionPort) ? extensionPort : null,
-    };
+  if (platform === "win32") {
+    // Windows: use wmic (preferred) or PowerShell Get-CimInstance (fallback)
+    let csvOutput = "";
+    const wmicResult = await runCommand(
+      commandRunner,
+      "wmic",
+      ["process", "where", "name like 'language_server%' or name = 'agy.exe'", "get", "ProcessId,CommandLine", "/format:csv"],
+      { timeout: 5000 },
+    );
+    if (wmicResult?.stdout && (wmicResult.stdout.includes("language_server") || wmicResult.stdout.includes("agy"))) {
+      csvOutput = wmicResult.stdout;
+    } else {
+      // wmic may be removed on Win11 24H2+; fall back to PowerShell
+      const psResult = await runCommand(
+        commandRunner,
+        "powershell.exe",
+        ["-NoProfile", "-NoLogo", "-Command",
+          "Get-CimInstance Win32_Process -Filter \"Name like 'language_server%' or Name = 'agy.exe'\" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation"],
+        { timeout: 10000 },
+      );
+      csvOutput = psResult?.stdout || "";
+    }
+
+    const lines = String(csvOutput).split("\n");
+    for (const line of lines) {
+      const lower = line.toLowerCase();
+      // Match language_server with antigravity markers, or agy.exe
+      const isAgy = lower.includes("agy.exe") || lower.trim().endsWith(",agy");
+      const isLangServer = lower.includes("language_server") && lower.includes("antigravity");
+      if (!isAgy && !isLangServer) continue;
+      // Extract PID: wmic CSV has PID as last column (...,PID); PowerShell CSV has PID first ("PID","...")
+      let pid = null;
+      const psMatch = line.trim().match(/^\s*"?(\d+)"?\s*,/);
+      const wmicMatch = line.trim().match(/,(\d+)\s*$/);
+      if (psMatch) pid = Number(psMatch[1]);
+      else if (wmicMatch) pid = Number(wmicMatch[1]);
+      if (!pid || !Number.isFinite(pid)) continue;
+      const csrfToken = extractCommandFlag(line, "--csrf_token") || null;
+      const extensionPort = extractFirstNumber(extractCommandFlag(line, "--extension_server_port"));
+      const isStandalone = lower.includes("--standalone");
+      candidates.push({
+        configured: true,
+        pid,
+        csrfToken,
+        extensionPort: Number.isFinite(extensionPort) ? extensionPort : null,
+        isStandalone,
+      });
+    }
+  } else {
+    // macOS / Linux: use ps
+    const result = await runCommand(commandRunner, "/bin/ps", ["-ax", "-o", "pid=,command="], {
+      timeout: 4000,
+    });
+    const lines = String(result?.stdout || "").split("\n");
+    for (const line of lines) {
+      const parsed = parseProcessLine(line);
+      if (!parsed) continue;
+      if (!isAntigravityCommandLine(parsed.command)) continue;
+      const csrfToken = extractCommandFlag(parsed.command, "--csrf_token") || null;
+      const extensionPort = extractFirstNumber(extractCommandFlag(parsed.command, "--extension_server_port"));
+      const isStandalone = parsed.command.toLowerCase().includes("--standalone");
+      candidates.push({
+        configured: true,
+        pid: parsed.pid,
+        csrfToken,
+        extensionPort: Number.isFinite(extensionPort) ? extensionPort : null,
+        isStandalone,
+      });
+    }
   }
 
-  if (sawProcess) {
-    return { configured: true, error: "Antigravity CSRF token not found. Restart Antigravity and retry." };
+  if (!candidates.length) {
+    return { configured: false };
   }
-  return { configured: false };
+
+  // Prioritize Antigravity 2.0 standalone process over IDE process
+  const standalone = candidates.find((c) => c.isStandalone);
+  const chosen = standalone || candidates[0];
+
+  return {
+    configured: true,
+    pid: chosen.pid,
+    csrfToken: chosen.csrfToken,
+    extensionPort: chosen.extensionPort,
+  };
 }
 
 function resolveAntigravityLimitsCachePath({ home } = {}) {
@@ -2304,7 +2367,30 @@ function parseListeningPorts(output) {
   return Array.from(ports).sort((a, b) => a - b);
 }
 
-async function listAntigravityPorts(pid, { commandRunner } = {}) {
+async function listAntigravityPorts(pid, { commandRunner, platform = process.platform } = {}) {
+  if (platform === "win32") {
+    // Windows: use netstat -ano to find listening ports for the PID
+    const result = await runCommand(commandRunner, "netstat", ["-ano"], { timeout: 5000 });
+    const output = String(result?.stdout || "");
+    const ports = new Set();
+    for (const line of output.split("\n")) {
+      if (!line.includes("LISTENING")) continue;
+      // Exact PID match: PID is the last whitespace-delimited field
+      const pidMatch = line.trim().match(/\s(\d+)$/);
+      if (!pidMatch || pidMatch[1] !== String(pid)) continue;
+      const portMatch = line.match(/127\.0\.0\.1:(\d+)\s/);
+      if (portMatch) {
+        ports.add(Number(portMatch[1]));
+      }
+    }
+    const sorted = Array.from(ports).sort((a, b) => a - b);
+    if (!sorted.length) {
+      throw new Error("Antigravity is running but not exposing ports yet. Try again in a few seconds.");
+    }
+    return sorted;
+  }
+
+  // macOS / Linux: use lsof
   const lsof = await resolveLsofBinary({ commandRunner });
   if (!lsof) {
     throw new Error("Antigravity port detection needs lsof. Install it, then retry.");
@@ -2610,7 +2696,7 @@ function hasAntigravityInstallEvidence({ home } = {}) {
     });
 }
 
-async function fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImpl = fetch, timeoutMs = 8000, nowMs = Date.now() } = {}) {
+async function fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImpl = fetch, timeoutMs = 8000, nowMs = Date.now(), platform = process.platform } = {}) {
   const finalize = (payload, normalizeOptions) => {
     const result = {
       configured: true,
@@ -2632,7 +2718,7 @@ async function fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImp
   };
 
   try {
-    const processInfo = await detectAntigravityProcess({ commandRunner });
+    const processInfo = await detectAntigravityProcess({ commandRunner, platform });
     if (!processInfo.configured) {
       const cached = readAntigravityLimitsCache({ home, nowMs });
       if (cached) return cached;
@@ -2641,12 +2727,12 @@ async function fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImp
       if (!hasAntigravityInstallEvidence({ home })) {
         return { configured: false };
       }
-      return { configured: true, error: "Antigravity IDE is not running. Launch Antigravity to see usage limits." };
+      return { configured: true, error: "Antigravity is not running. Launch Antigravity IDE or Antigravity 2.0 to see usage limits." };
     }
     if (processInfo.error) {
       return { configured: true, error: processInfo.error };
     }
-    const ports = await listAntigravityPorts(processInfo.pid, { commandRunner });
+    const ports = await listAntigravityPorts(processInfo.pid, { commandRunner, platform });
     let workingPort = null;
     let workingScheme = "https";
     for (const port of ports) {

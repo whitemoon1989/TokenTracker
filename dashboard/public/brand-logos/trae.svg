@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none">
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E40AF" />
+      <stop offset="100%" stop-color="#3B82F6" />
+    </linearGradient>
+    <linearGradient id="grad2" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#60A5FA" />
+      <stop offset="100%" stop-color="#3B82F6" />
+    </linearGradient>
+  </defs>
+  <!-- Left/vertical band of T -->
+  <path d="M3 5.5A2.5 2.5 0 015.5 3h6.75a1 1 0 011 1v14.5a2.5 2.5 0 01-2.5 2.5H9.25a1 1 0 01-1-1V9H5.5A2.5 2.5 0 013 6.5v-1z" fill="url(#grad1)" />
+  <!-- Right band of T -->
+  <path d="M12.75 3h5.75A2.5 2.5 0 0121 5.5v1A2.5 2.5 0 0118.5 9h-5.75V3z" fill="url(#grad2)" />
+</svg>

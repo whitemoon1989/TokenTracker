@@ -88,6 +88,9 @@ const {
   toUtcHalfHourStart,
   totalsKey,
   claudeMessageDedupKey,
+  parseTraeIncremental,
+  resolveQoderPaths,
+  parseQoderIncremental,
 } = require("../lib/rollout");
 const { computeClaudeGroundTruthBuckets } = require("../lib/claude-categorizer");
 const { createProgress, renderBar, formatNumber, formatBytes } = require("../lib/progress");
@@ -105,6 +108,12 @@ const {
   fetchCursorUsageCsv,
   parseCursorCsv,
 } = require("../lib/cursor-config");
+const {
+  isTraeInstalled,
+  resolveTraeToken,
+  getTraeCacheDir,
+} = require("../lib/trae-config");
+const { syncTraeUsage, syncTraeCnLocal } = require("../lib/trae-sync");
 const { purgeProjectUsage } = require("../lib/project-usage-purge");
 const {
   isCodexSessionCursorPath,
@@ -205,6 +214,7 @@ const AUTO_SYNC_SOURCE_ALIASES = new Map([
   ["kilo", "kilo-cli"],
   ["kilo-code", "kilocode"],
   ["kimi_code", "kimi-code"],
+  ["qorder", "qoder"],
   ["roo-code", "roocode"],
 ]);
 const AUTO_SYNC_SOURCES = new Set([
@@ -232,6 +242,7 @@ const AUTO_SYNC_SOURCES = new Set([
   "opencode",
   "openclaw",
   "pi",
+  "qoder",
   "roocode",
   "workbuddy",
   "zcode",
@@ -1190,6 +1201,132 @@ async function cmdSync(argv, context = {}) {
       }
     }
 
+    // ── Trae (API-based) ──
+    let traeResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    if (!isBackgroundLightweightSync && sourceAllowed("trae")) {
+      const traeStatus = isTraeInstalled({ home });
+      const variants = [];
+      if (traeStatus.ide) variants.push("ide");
+      if (traeStatus.solo) variants.push("solo");
+
+      for (const variant of variants) {
+        try {
+          if (progress?.enabled) {
+            progress.start(`Syncing Trae ${variant} usage...`);
+          }
+          const count = await syncTraeUsage(variant, 30, false);
+          const cacheDir = await getTraeCacheDir();
+          const manifestPath = path.join(cacheDir, "manifest.json");
+          const manifest = await readJson(manifestPath);
+
+          if (manifest && manifest.sessions && manifest.sessions.length > 0) {
+            if (progress?.enabled) {
+              progress.start(`Parsing Trae ${variant} ${renderBar(0)} | buckets 0`);
+            }
+
+            const sourceName = variant === "solo" ? "trae-solo" : "trae";
+            const parseRes = await parseTraeIncremental({
+              manifest,
+              cursors,
+              queuePath,
+              source: sourceName,
+              cacheDir,
+              onProgress: (p) => {
+                if (!progress?.enabled) return;
+                const pct = p.total > 0 ? p.index / p.total : 1;
+                progress.update(
+                  `Parsing Trae ${variant} ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
+                    p.total,
+                  )} records | buckets ${formatNumber(p.bucketsQueued)}`,
+                );
+              },
+            });
+
+            traeResult.recordsProcessed += parseRes.recordsProcessed;
+            traeResult.eventsAggregated += parseRes.eventsAggregated;
+            traeResult.bucketsQueued += parseRes.bucketsQueued;
+          }
+          break;
+        } catch (err) {
+          if (!opts.auto) {
+            const dbg = String(process.env.TOKENTRACKER_DEBUG || "").toLowerCase();
+            if (dbg === "1" || dbg === "true") {
+              process.stderr.write(`Trae ${variant} sync: ${err.message}\n`);
+            }
+          }
+        }
+      }
+
+      // ── Trae CN (Local DB-based) ──
+      try {
+        if (progress?.enabled) {
+          progress.start("Syncing Trae CN local database...");
+        }
+        const cnCount = await syncTraeCnLocal();
+        if (cnCount > 0) {
+          const cacheDir = await getTraeCacheDir();
+          const manifestPath = path.join(cacheDir, "manifest.json");
+          const manifest = await readJson(manifestPath);
+
+          if (manifest && manifest.sessions && manifest.sessions.length > 0) {
+            if (progress?.enabled) {
+              progress.start(`Parsing Trae CN local ${renderBar(0)} | buckets 0`);
+            }
+
+            const parseRes = await parseTraeIncremental({
+              manifest,
+              cursors,
+              queuePath,
+              source: "trae",
+              cacheDir,
+              onProgress: (p) => {
+                if (!progress?.enabled) return;
+                const pct = p.total > 0 ? p.index / p.total : 1;
+                progress.update(
+                  `Parsing Trae CN local ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
+                    p.total,
+                  )} records | buckets ${formatNumber(p.bucketsQueued)}`,
+                );
+              },
+            });
+
+            traeResult.recordsProcessed += parseRes.recordsProcessed;
+            traeResult.eventsAggregated += parseRes.eventsAggregated;
+            traeResult.bucketsQueued += parseRes.bucketsQueued;
+          }
+        }
+      } catch (err) {
+        const dbg = String(process.env.TOKENTRACKER_DEBUG || "").toLowerCase();
+        if (dbg === "1" || dbg === "true") {
+          process.stderr.write(`Trae CN local sync failed:\n${err.stack || err.message}\n`);
+        }
+      }
+    }
+
+    // ── Qoder (SQLite-based) ──
+    let qoderResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    const qoderPaths = resolveQoderPaths(process.env);
+    if (sourceAllowed("qoder") && (fssync.existsSync(qoderPaths.workDbPath || "") || fssync.existsSync(qoderPaths.ideDbPath || ""))) {
+      if (progress?.enabled) {
+        progress.start(`Parsing Qoder ${renderBar(0)} | buckets 0`);
+      }
+      try {
+        qoderResult = await parseQoderIncremental({
+          cursors,
+          queuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Qoder ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} records | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Qoder", err, opts);
+      }
+    }
+
     // ── Kiro (SQLite-based, with JSONL fallback) ──
     let kiroResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
     const kiroDbPath = resolveKiroDbPath();
@@ -2082,8 +2219,10 @@ async function cmdSync(argv, context = {}) {
         antigravityResult.filesProcessed +
         opencodeResult.filesProcessed +
         cursorResult.recordsProcessed +
+        traeResult.recordsProcessed +
         kiroResult.recordsProcessed +
         kiroCliResult.recordsProcessed +
+        qoderResult.recordsProcessed +
         hermesResult.recordsProcessed +
         kimiResult.recordsProcessed +
         kimiCodeResult.recordsProcessed +
@@ -2111,8 +2250,10 @@ async function cmdSync(argv, context = {}) {
         antigravityResult.bucketsQueued +
         opencodeResult.bucketsQueued +
         cursorResult.bucketsQueued +
+        traeResult.bucketsQueued +
         kiroResult.bucketsQueued +
         kiroCliResult.bucketsQueued +
+        qoderResult.bucketsQueued +
         hermesResult.bucketsQueued +
         kimiResult.bucketsQueued +
         kimiCodeResult.bucketsQueued +

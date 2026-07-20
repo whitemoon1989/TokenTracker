@@ -62,7 +62,7 @@ SET hash_mem_multiplier TO '4'
 AS $func$
   WITH cfg AS (
     -- Keep in sync with src/lib/source-metadata.js ACCOUNT_LEVEL_SOURCES.
-    SELECT ARRAY['cursor']::text[] AS account_sources
+    SELECT ARRAY['cursor','trae']::text[] AS account_sources
   ),
   -- Hour-grain canonical rows. TWO passes total (DISTINCT + the per_usm GROUP BY)
   -- so the whole-history 'total' refresh stays within the edge's 30s budget --

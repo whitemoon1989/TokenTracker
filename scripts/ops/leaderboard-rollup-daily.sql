@@ -107,7 +107,7 @@ LANGUAGE sql STABLE
 AS $func$
   WITH cfg AS (
     -- Keep in sync with src/lib/source-metadata.js ACCOUNT_LEVEL_SOURCES.
-    SELECT ARRAY['cursor']::text[] AS account_sources
+    SELECT ARRAY['cursor','trae']::text[] AS account_sources
   )
   -- Machine-level: ONE canonical whole row per (user, source, model, hour)
   -- across the user's ACTIVE devices, largest total_tokens wins (issue #187).

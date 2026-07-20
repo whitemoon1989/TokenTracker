@@ -68,7 +68,9 @@ const {
   resolveCopilotAppDbPath,
   resolveCopilotAppDbPaths,
   probeWslDistros,
+  resolveQoderPaths,
 } = require("../lib/rollout");
+const { isTraeInstalled, loadCredentials, resolveTraeCnPaths, resolveTraeCnDbKey } = require("../lib/trae-config");
 const wsl = require("../lib/wsl-probe");
 const { getWslMode, isInvalidWslMode, shouldProbeWsl, discoverWslHome } = wsl;
 const { resolveInstallPaths } = require("../lib/install-resolver");
@@ -296,6 +298,37 @@ async function cmdStatus(argv = []) {
   const mimoActive = formatResolvedPaths(mimoPaths);
   const mimoInstalled = mimoActive.length > 0;
   const mimoDbPath = mimoActive.join(" | ");
+
+  // Trae
+  const traeStatus = isTraeInstalled({ home });
+  const traeIdeCreds = await loadCredentials("ide");
+  const traeSoloCreds = await loadCredentials("solo");
+  const traeInstalled = traeStatus.ide || traeStatus.solo;
+  const traeCredsDetails = [];
+  if (traeIdeCreds) traeCredsDetails.push("IDE token set");
+  if (traeSoloCreds) traeCredsDetails.push("Solo token set");
+  const traeDetail = traeCredsDetails.length > 0 ? traeCredsDetails.join(", ") : "no credentials";
+
+  // Trae CN (local db)
+  const traeCnPaths = resolveTraeCnPaths({ home });
+  const traeCnDbExists = fssync.existsSync(traeCnPaths.dbPath);
+  let traeCnKeyDetail = "no key";
+  if (traeCnDbExists) {
+    const traeCnKey = await resolveTraeCnDbKey({ home });
+    if (traeCnKey) {
+      traeCnKeyDetail = "key configured";
+    }
+  }
+
+  // Qoder
+  const qoderPaths = resolveQoderPaths(process.env);
+  const qoderWorkInstalled = Boolean(qoderPaths.workDbPath && fssync.existsSync(qoderPaths.workDbPath));
+  const qoderIdeInstalled = Boolean(qoderPaths.ideDbPath && fssync.existsSync(qoderPaths.ideDbPath));
+  const qoderInstalled = qoderWorkInstalled || qoderIdeInstalled;
+  const qoderDetail = [
+    qoderWorkInstalled ? "QoderWork" : null,
+    qoderIdeInstalled ? "Qoder IDE" : null,
+  ].filter(Boolean).join(", ") || "not found";
 
   // ZCode (Z.ai's coding agent — OpenCode-fork SQLite) — passive scan of db.sqlite.
   const zcodeHome = process.env.ZCODE_HOME || path.join(home, ".zcode");
@@ -668,6 +701,20 @@ async function cmdStatus(argv = []) {
         droid: droidInstalled
           ? { installed: true, files: droidSettingsFiles.length, detail: droidSessionsDir }
           : { installed: false },
+        trae: traeInstalled || traeCnDbExists
+          ? {
+              installed: true,
+              detail: traeInstalled
+                ? (traeCnDbExists ? `${traeDetail}; CN: ${traeCnKeyDetail}` : traeDetail)
+                : `CN: ${traeCnKeyDetail}`,
+            }
+          : { installed: false },
+        qoder: qoderInstalled
+          ? {
+              installed: true,
+              detail: qoderDetail,
+            }
+          : { installed: false },
         grok_build: grokInstalled
           ? {
               installed: true,
@@ -754,6 +801,12 @@ async function cmdStatus(argv = []) {
         : null,
       craftInstalled
         ? `- Craft Agents: passive reader (${craftFiles.length} session jsonl file${craftFiles.length !== 1 ? "s" : ""} found)`
+        : null,
+      traeInstalled || traeCnDbExists
+        ? `- Trae: ${traeInstalled ? `API sync (${traeDetail})` : ""}${traeInstalled && traeCnDbExists ? " / " : ""}${traeCnDbExists ? `CN database sync (${traeCnKeyDetail})` : ""}`
+        : null,
+      qoderInstalled
+        ? `- Qoder: database sync (${qoderDetail})`
         : null,
       anythingllmInstalled
         ? `- AnythingLLM Desktop: passive reader (${anythingllmDbPath})`

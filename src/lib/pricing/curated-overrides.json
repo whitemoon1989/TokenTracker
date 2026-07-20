@@ -61,7 +61,20 @@
     "sakana/fugu-ultra": { "input": 5,    "output": 30,   "cache_read": 0.5,   "cache_write": 5,    "note": "Sakana Fugu Ultra — multi-agent orchestration via an OpenAI-compatible API (sakana.ai PAYG + OpenRouter), used through Codex/Cursor/Cline/ZCode etc. OpenRouter rates: $5/$30 per MTok in/out, cache_read $0.5/M; no published cache-write surcharge, so cache_write = input. Subscriptions ($20/$100/$200) bill against this token-equivalent rate." },
     "longcat-2.0":      { "input": 0.278, "output": 1.111, "cache_read": 0.00556, "cache_write": 0.278, "note": "Meituan LongCat-2.0, seen via ZCode custom-provider routing (issue #276). Official longcat.chat/platform launch-promo rate: RMB 2 / 0.04 (cache hit) / 8 per MTok in/read/out, converted at ~7.2 RMB/USD. Standard list price is RMB 5/0.10/20 (2.5x) once the promo ends — re-verify against longcat.chat/platform/docs/zh/Pricing/LongCat-2.0.html before assuming either is permanent. DeepSeek-style cache: no write surcharge, so cache_write = input." },
     "step-3.7-flash":   { "input": 0.2,  "output": 1.15, "cache_read": 0.04, "cache_write": 0.2, "note": "StepFun Step 3.7 Flash (issue #283). Official platform.stepfun.ai pricing: $0.20 / $0.04 (cache hit) / $1.15 per MTok in/read/out. No published cache-write surcharge, so cache_write = input." },
-    "step-3.5-flash":   { "input": 0.1,  "output": 0.3,  "cache_read": 0.02, "cache_write": 0.1, "note": "StepFun Step 3.5 Flash incl. dated snapshots like step-3.5-flash-2603 (issue #283). Official platform.stepfun.ai pricing: $0.10 / $0.02 (cache hit) / $0.30 per MTok in/read/out. No published cache-write surcharge, so cache_write = input." }
+    "step-3.5-flash":   { "input": 0.1,  "output": 0.3,  "cache_read": 0.02, "cache_write": 0.1, "note": "StepFun Step 3.5 Flash incl. dated snapshots like step-3.5-flash-2603 (issue #283). Official platform.stepfun.ai pricing: $0.10 / $0.02 (cache hit) / $0.30 per MTok in/read/out. No published cache-write surcharge, so cache_write = input." },
+    "gpt-5.4":          { "input": 5,    "output": 30,   "cache_read": 0.5,   "cache_write": 6.25 },
+    "gpt-5.3":          { "input": 5,    "output": 30,   "cache_read": 0.5,   "cache_write": 6.25 },
+    "gpt-5.2":          { "input": 5,    "output": 30,   "cache_read": 0.5,   "cache_write": 6.25 },
+    "gpt-5.1":          { "input": 5,    "output": 30,   "cache_read": 0.5,   "cache_write": 6.25 },
+    "gpt-5.3-codex":    { "input": 5,    "output": 30,   "cache_read": 0.5,   "cache_write": 6.25 },
+    "gpt-5.2-codex":    { "input": 5,    "output": 30,   "cache_read": 0.5,   "cache_write": 6.25 },
+    "gpt-5.1-codex":    { "input": 5,    "output": 30,   "cache_read": 0.5,   "cache_write": 6.25 },
+    "gemini-3.1-pro":   { "input": 1.25, "output": 5,    "cache_read": 0.125, "cache_write": 1 },
+    "gemini-3.1":       { "input": 0.075,"output": 0.3,  "cache_read": 0.0075,"cache_write": 0.075 },
+    "claude-sonnet-4.6": { "input": 3,    "output": 15,   "cache_read": 0.3,   "cache_write": 3.75 },
+    "claude-sonnet-4.5": { "input": 3,    "output": 15,   "cache_read": 0.3,   "cache_write": 3.75 },
+    "trae-auto":        { "input": 0,    "output": 0,    "cache_read": 0 },
+    "trae-unknown":     { "input": 0,    "output": 0,    "cache_read": 0 }
   },
   "alias": {
     "auto": "composer-1"

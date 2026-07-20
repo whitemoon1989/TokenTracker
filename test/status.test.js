@@ -17,11 +17,13 @@ function runSql(dbPath, sql) {
 test("status prints last upload timestamps from upload.throttle.json", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-status-"));
   const prevHome = process.env.HOME;
+  const prevUserProfile = process.env.USERPROFILE;
   const prevCodexHome = process.env.CODEX_HOME;
   const prevWrite = process.stdout.write;
 
   try {
     process.env.HOME = tmp;
+    process.env.USERPROFILE = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
 
     const trackerDir = path.join(tmp, ".tokentracker", "tracker");
@@ -89,6 +91,8 @@ test("status prints last upload timestamps from upload.throttle.json", async () 
     process.stdout.write = prevWrite;
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = prevUserProfile;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -286,11 +290,13 @@ test("status native-only mode does not probe WSL distros", async (t) => {
 test("status does not migrate legacy tracker directory", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-status-legacy-"));
   const prevHome = process.env.HOME;
+  const prevUserProfile = process.env.USERPROFILE;
   const prevCodexHome = process.env.CODEX_HOME;
   const prevWrite = process.stdout.write;
 
   try {
     process.env.HOME = tmp;
+    process.env.USERPROFILE = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
 
     const legacyTrackerDir = path.join(tmp, ".legacy-tracker-root", "tracker");
@@ -354,6 +360,8 @@ test("status does not migrate legacy tracker directory", async () => {
     process.stdout.write = prevWrite;
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = prevUserProfile;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
     await fs.rm(tmp, { recursive: true, force: true });

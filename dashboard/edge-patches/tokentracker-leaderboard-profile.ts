@@ -387,7 +387,7 @@ function canonicalSource(s: string) {
 // Keep in sync with ACCOUNT_LEVEL_SOURCES in src/lib/source-metadata.js, the
 // account_usage_grouped RPC, and tokentracker-leaderboard-refresh.ts
 // (parity: test/account-source-parity.test.js).
-const ACCOUNT_LEVEL_SOURCES = new Set<string>(["cursor"]);
+const ACCOUNT_LEVEL_SOURCES = new Set<string>(["cursor", "trae"]);
 
 // ─────────────────────────── Window bounds ──────────────────────────
 function windowBoundsForPeriod(period: string): { from_day: string; to_day: string } {

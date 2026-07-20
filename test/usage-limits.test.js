@@ -2659,7 +2659,7 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
       status: 0,
     });
 
-    const result = await detectAntigravityProcess({ commandRunner });
+    const result = await detectAntigravityProcess({ commandRunner, platform: "darwin" });
 
     assert.equal(result.configured, true);
     assert.equal(result.pid, 123);
@@ -2675,7 +2675,7 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
       status: 0,
     });
 
-    const result = await detectAntigravityProcess({ commandRunner });
+    const result = await detectAntigravityProcess({ commandRunner, platform: "darwin" });
 
     assert.equal(result.configured, true);
     assert.equal(result.pid, 456);
@@ -2691,7 +2691,7 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
       status: 0,
     });
 
-    const result = await detectAntigravityProcess({ commandRunner });
+    const result = await detectAntigravityProcess({ commandRunner, platform: "darwin" });
 
     assert.equal(result.configured, true);
     assert.equal(result.pid, 789);
@@ -2706,7 +2706,7 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
       status: 0,
     });
 
-    const result = await detectAntigravityProcess({ commandRunner });
+    const result = await detectAntigravityProcess({ commandRunner, platform: "darwin" });
 
     assert.equal(result.configured, true);
     assert.equal(result.pid, 101);
@@ -2723,7 +2723,7 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
       status: 0,
     });
 
-    const result = await detectAntigravityProcess({ commandRunner });
+    const result = await detectAntigravityProcess({ commandRunner, platform: "darwin" });
 
     assert.equal(result.configured, false);
   });
@@ -2736,7 +2736,7 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
       status: 0,
     });
 
-    const result = await detectAntigravityProcess({ commandRunner });
+    const result = await detectAntigravityProcess({ commandRunner, platform: "darwin" });
 
     assert.equal(result.configured, true);
     assert.equal(result.pid, 555);
@@ -2750,7 +2750,7 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
       status: 0,
     });
 
-    const result = await detectAntigravityProcess({ commandRunner });
+    const result = await detectAntigravityProcess({ commandRunner, platform: "darwin" });
 
     assert.equal(result.configured, false);
   });
@@ -2763,7 +2763,7 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
       status: 0,
     });
 
-    const result = await detectAntigravityProcess({ commandRunner });
+    const result = await detectAntigravityProcess({ commandRunner, platform: "darwin" });
 
     assert.equal(result.configured, false);
   });
@@ -2816,7 +2816,7 @@ lang 123 me 22u IPv4 0x123 0t0 TCP 127.0.0.1:51234 (LISTEN)
         };
       };
 
-      const result = await fetchAntigravityLimits({ home: tmp, commandRunner, requestFn, nowMs });
+      const result = await fetchAntigravityLimits({ home: tmp, commandRunner, requestFn, nowMs, platform: "darwin" });
       assert.equal(result.configured, true);
       assert.equal(result.primary_window.used_percent, 75);
 
@@ -2916,6 +2916,7 @@ lang 123 me 22u IPv4 0x123 0t0 TCP 127.0.0.1:51234 (LISTEN)
         commandRunner,
         requestFn,
         nowMs: Date.parse("2026-05-21T01:00:00.000Z"),
+        platform: "darwin",
       });
 
       assert.equal(result.configured, true);
