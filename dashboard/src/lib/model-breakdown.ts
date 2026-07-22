@@ -2,6 +2,11 @@ import { toFiniteNumber } from "./format";
 
 type AnyRecord = Record<string, any>;
 
+// Sources that only report aggregate input/output tokens without a cache
+// breakdown. We estimate 90% of input tokens are cache hits for display.
+const ESTIMATED_CACHE_HIT_RATE = 0.9;
+const ESTIMATED_CACHE_SOURCES = new Set(["antigravity", "grok"]);
+
 function normalizeModelId(value: any) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -35,13 +40,25 @@ export function buildFleetData(modelBreakdown: any, { copyFn }: AnyRecord = {}) 
     .map((entry: any) => {
       const totalTokens = resolveDisplayTokens(entry?.totals);
       const totalCost = toFiniteNumber(entry?.totals?.total_cost_usd) ?? 0;
+      const rawInput = Math.max(0, toFiniteNumber(entry?.totals?.input_tokens) ?? 0);
+      const rawCacheRead = Math.max(0, toFiniteNumber(entry?.totals?.cached_input_tokens) ?? 0);
+      const rawCacheCreate = Math.max(0, toFiniteNumber(entry?.totals?.cache_creation_input_tokens) ?? 0);
+      // input_tokens is the cache-MISS portion. Infer cached tokens from the
+      // estimated 90% hit rate: cached = input * (0.9 / 0.1) = input * 9.
+      const sourceKey = String(entry?.source || "").toLowerCase();
+      const useEstimate =
+        rawCacheRead + rawCacheCreate === 0 && ESTIMATED_CACHE_SOURCES.has(sourceKey);
+      const inferredCached = useEstimate
+        ? Math.round(rawInput * (ESTIMATED_CACHE_HIT_RATE / (1 - ESTIMATED_CACHE_HIT_RATE)))
+        : 0;
       return {
         source: entry?.source,
-        totalTokens: Number.isFinite(totalTokens) ? totalTokens : 0,
+        totalTokens: (Number.isFinite(totalTokens) ? totalTokens : 0) + inferredCached,
         totalCost: Number.isFinite(totalCost) ? totalCost : 0,
-        inputTokens: Math.max(0, toFiniteNumber(entry?.totals?.input_tokens) ?? 0),
-        cacheRead: Math.max(0, toFiniteNumber(entry?.totals?.cached_input_tokens) ?? 0),
-        cacheCreate: Math.max(0, toFiniteNumber(entry?.totals?.cache_creation_input_tokens) ?? 0),
+        inputTokens: rawInput,
+        cacheRead: useEstimate ? inferredCached : rawCacheRead,
+        cacheCreate: rawCacheCreate,
+        estimatedCache: useEstimate,
         models: Array.isArray(entry?.models) ? entry.models : [],
       };
     })
@@ -66,8 +83,20 @@ export function buildFleetData(modelBreakdown: any, { copyFn }: AnyRecord = {}) 
       const totalPercent = Number.isFinite(totalPercentRaw) ? totalPercentRaw.toFixed(2) : "0.00";
       const models = entry.models
         .map((model: any) => {
-          const modelTokens = resolveDisplayTokens(model?.totals);
-          if (!Number.isFinite(modelTokens) || modelTokens <= 0) return null;
+          const rawModelTokens = resolveDisplayTokens(model?.totals);
+          if (!Number.isFinite(rawModelTokens) || rawModelTokens <= 0) return null;
+          // Token-type split for the stacked composition bar. Output includes
+          // reasoning tokens (both are output-side); "input" here is the
+          // cache-miss portion. For estimated sources, cached is inferred.
+          const rawModelInput = Math.max(0, toFiniteNumber(model?.totals?.input_tokens) ?? 0);
+          const rawModelCached = Math.max(0, toFiniteNumber(model?.totals?.cached_input_tokens) ?? 0);
+          const rawModelCacheCreate = Math.max(0, toFiniteNumber(model?.totals?.cache_creation_input_tokens) ?? 0);
+          const modelUseEstimate =
+            entry.estimatedCache && rawModelCached + rawModelCacheCreate === 0;
+          const modelInferredCached = modelUseEstimate
+            ? Math.round(rawModelInput * (ESTIMATED_CACHE_HIT_RATE / (1 - ESTIMATED_CACHE_HIT_RATE)))
+            : 0;
+          const modelTokens = rawModelTokens + modelInferredCached;
           const share =
             entry.totalTokens > 0 ? Math.round((modelTokens / entry.totalTokens) * 1000) / 10 : 0;
           const name = resolveModelName(model, safeCopy("shared.placeholder.short"));
@@ -79,14 +108,22 @@ export function buildFleetData(modelBreakdown: any, { copyFn }: AnyRecord = {}) 
               : entry.totalCost > 0 && entry.totalTokens > 0
                 ? (modelTokens / entry.totalTokens) * entry.totalCost
                 : null;
-          return { id, name, share, usage: modelTokens, cost: modelCost };
+          const breakdown = {
+            input: rawModelInput,
+            output:
+              Math.max(0, toFiniteNumber(model?.totals?.output_tokens) ?? 0) +
+              Math.max(0, toFiniteNumber(model?.totals?.reasoning_output_tokens) ?? 0),
+            cached: modelUseEstimate ? modelInferredCached : rawModelCached,
+            cacheCreate: rawModelCacheCreate,
+          };
+          return { id, name, share, usage: modelTokens, cost: modelCost, breakdown };
         })
         .filter(Boolean);
       // Input-side cache hit rate = cache reads / all input-side tokens
       // (non-cached input + cache reads + cache writes). cached_input_tokens are
-      // reads, cache_creation_input_tokens are writes. null when the source does
-      // no caching at all (e.g. Gemini/Antigravity report neither) so the UI omits
-      // the line instead of showing a meaningless 0%.
+      // reads, cache_creation_input_tokens are writes. For sources that report no
+      // cache split (antigravity/grok), the normalized values already reflect the
+      // 90% estimated hit rate. null only for sources with zero input tokens.
       const cacheInputTokens = entry.inputTokens + entry.cacheRead + entry.cacheCreate;
       const hasCacheActivity = entry.cacheRead + entry.cacheCreate > 0;
       const cacheHitRate =

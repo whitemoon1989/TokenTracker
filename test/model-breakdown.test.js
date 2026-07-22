@@ -638,3 +638,112 @@ test("(source, model) collapse: IDE + CLI both resolving to claude-sonnet-4 merg
     await fs.promises.rm(tmp, { recursive: true, force: true });
   }
 });
+
+test("buildFleetData estimates 90% cache hit for antigravity/grok without cache data", async () => {
+  const mod = await loadDashboardModule("dashboard/src/lib/model-breakdown.ts");
+  const buildFleetData = mod.buildFleetData;
+
+  const modelBreakdown = {
+    sources: [
+      {
+        source: "antigravity",
+        totals: {
+          total_tokens: 2000,
+          input_tokens: 1000,
+          cached_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          output_tokens: 1000,
+        },
+        models: [
+          {
+            model: "Claude Sonnet 4.6",
+            model_id: "claude-sonnet-4-6",
+            totals: {
+              total_tokens: 2000,
+              input_tokens: 1000,
+              cached_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+              output_tokens: 1000,
+            },
+          },
+        ],
+      },
+      {
+        source: "grok",
+        totals: {
+          total_tokens: 5000,
+          input_tokens: 4000,
+          cached_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          output_tokens: 1000,
+        },
+        models: [
+          {
+            model: "grok-4",
+            model_id: "grok-4",
+            totals: {
+              total_tokens: 5000,
+              input_tokens: 4000,
+              cached_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+              output_tokens: 1000,
+            },
+          },
+        ],
+      },
+      {
+        // gemini is NOT in the estimated set → still null
+        source: "gemini",
+        totals: {
+          total_tokens: 800,
+          input_tokens: 500,
+          cached_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          output_tokens: 300,
+        },
+        models: [
+          {
+            model: "gemini-3-pro",
+            model_id: "gemini-3-pro",
+            totals: { total_tokens: 800, input_tokens: 500, output_tokens: 300 },
+          },
+        ],
+      },
+    ],
+  };
+
+  const fleetData = buildFleetData(modelBreakdown);
+  const ag = fleetData.find((f) => f.source === "antigravity");
+  const grok = fleetData.find((f) => f.source === "grok");
+  const gemini = fleetData.find((f) => f.source === "gemini");
+
+  // Source-level: 90% estimated cache hit rate
+  // input_tokens is the miss portion; inferred cached = input * 9
+  assert.equal(ag.cacheHitRate, 90, "antigravity must show estimated 90% hit rate");
+  assert.equal(ag.cacheReusedTokens, 9000, "1000 miss * 9 = 9000 inferred cached");
+  assert.equal(ag.cacheInputTokens, 10000, "1000 miss + 9000 cached = 10000 total input-side");
+
+  assert.equal(grok.cacheHitRate, 90, "grok must show estimated 90% hit rate");
+  assert.equal(grok.cacheReusedTokens, 36000, "4000 miss * 9 = 36000 inferred cached");
+
+  // Model-level breakdown reflects the estimate
+  const agModel = ag.models[0];
+  assert.equal(agModel.breakdown.cached, 9000);
+  assert.equal(agModel.breakdown.input, 1000);
+  assert.equal(agModel.breakdown.output, 1000);
+  // usage includes inferred cached: original 2000 + 9000 = 11000
+  assert.equal(agModel.usage, 11000);
+
+  const grokModel = grok.models[0];
+  assert.equal(grokModel.breakdown.cached, 36000);
+  assert.equal(grokModel.breakdown.input, 4000);
+  // usage includes inferred cached: original 5000 + 36000 = 41000
+  assert.equal(grokModel.usage, 41000);
+
+  // Source totalTokens includes inferred cached
+  assert.equal(ag.usage, 11000, "2000 original + 9000 inferred");
+  assert.equal(grok.usage, 41000, "5000 original + 36000 inferred");
+
+  // gemini is not in the estimated set → null
+  assert.equal(gemini.cacheHitRate, null, "gemini must remain null (not estimated)");
+});

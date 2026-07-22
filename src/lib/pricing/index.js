@@ -16,6 +16,10 @@ const { loadLitellmData } = require("./litellm-fetcher");
 
 const ZERO_PRICING = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
 const PI_SUBSCRIPTION_SOURCES = new Set(["pi-github-copilot", "pi-copilot"]);
+// Sources that only report aggregate input/output tokens without a cache
+// breakdown. For cost estimation we assume 90% of input tokens are cache hits.
+const ESTIMATED_CACHE_HIT_RATE = 0.9;
+const ESTIMATED_CACHE_SOURCES = new Set(["antigravity", "grok"]);
 const SEED_SNAPSHOT_PATH = path.resolve(__dirname, "seed-snapshot.json");
 
 // Sync seed load. Done at require-time so callers that haven't awaited
@@ -125,11 +129,32 @@ function computeRowCost(row) {
   const reasoningCost = reasoningIncludedInOutput
     ? 0
     : (row.reasoning_output_tokens || 0) * (pricing.output || 0);
-  return (
-    ((row.input_tokens || 0) * (pricing.input || 0) +
-      (row.output_tokens || 0) * (pricing.output || 0) +
+
+  // Antigravity/Grok report input_tokens as the cache-MISS portion only.
+  // With an estimated 90% hit rate, infer cached tokens = input * (0.9/0.1)
+  // = input * 9, and bill them at the cache_read rate.
+  const sourceKey = String(row?.source || "").toLowerCase();
+  const hasRealCache =
+    (row.cached_input_tokens || 0) > 0 || (row.cache_creation_input_tokens || 0) > 0;
+  let inputCost;
+  if (
+    !hasRealCache &&
+    ESTIMATED_CACHE_SOURCES.has(sourceKey) &&
+    (pricing.cache_read || 0) > 0
+  ) {
+    const inputTokens = row.input_tokens || 0;
+    const inferredCached = inputTokens * (ESTIMATED_CACHE_HIT_RATE / (1 - ESTIMATED_CACHE_HIT_RATE));
+    inputCost = inputTokens * (pricing.input || 0) + inferredCached * (pricing.cache_read || 0);
+  } else {
+    inputCost =
+      (row.input_tokens || 0) * (pricing.input || 0) +
       (row.cached_input_tokens || 0) * (pricing.cache_read || 0) +
-      (row.cache_creation_input_tokens || 0) * (pricing.cache_write || 0) +
+      (row.cache_creation_input_tokens || 0) * (pricing.cache_write || 0);
+  }
+
+  return (
+    (inputCost +
+      (row.output_tokens || 0) * (pricing.output || 0) +
       reasoningCost) /
     1_000_000
   );
@@ -151,6 +176,8 @@ module.exports = {
   resetPricingForTests,
   MODEL_PRICING,
   ZERO_PRICING,
+  ESTIMATED_CACHE_HIT_RATE,
+  ESTIMATED_CACHE_SOURCES,
   // Internal hooks for tests.
   __getStateForTests: () => state,
 };

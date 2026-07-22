@@ -88,6 +88,8 @@ export function ActivityHeatmap({
   // wrapper (e.g. the leaderboard profile modal). Default keeps the
   // standalone dashboard appearance.
   embedded = false,
+  selectedDay = null,
+  onCellClick = null,
 }) {
   const { resolvedTheme } = useTheme();
   const { currency, rate } = useCurrency();
@@ -556,12 +558,18 @@ export function ActivityHeatmap({
                   const key = cell.day || `e-${wi}-${di}`;
                   const level = Number(cell.level) || 0;
                   const color = heatmapColors[level] || heatmapColors[0];
+                  const isSelected = selectedDay && cell.day === selectedDay;
                   return (
                     <span
                       key={key}
                       onMouseEnter={(e) => handleCellMouseEnter(e, cell)}
                       onMouseLeave={handleCellMouseLeave}
-                      className="rounded-[2px] transition-transform hover:scale-125 hover:z-10 cursor-pointer"
+                      onClick={() => onCellClick?.(cell)}
+                      className={`rounded-[2px] transition-all hover:scale-125 hover:z-10 cursor-pointer ${
+                        isSelected 
+                          ? "scale-110 z-10 ring-2 ring-offset-[1.5px] ring-oai-black dark:ring-white ring-offset-white dark:ring-offset-oai-gray-900" 
+                          : ""
+                      }`}
                       style={{ width: cellSize, height: cellSize, background: color }}
                     />
                   );

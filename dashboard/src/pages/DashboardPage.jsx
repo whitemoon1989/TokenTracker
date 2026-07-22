@@ -341,7 +341,7 @@ export function DashboardPage({
   const tzOffsetMinutes = useMemo(() => getBrowserTimeZoneOffsetMinutes(), []);
   const mockNow = useMemo(() => getMockNow(), []);
   const cacheKey = publicMode ? null : auth?.userId || auth?.email || "default";
-  const [selectedPeriod, setSelectedPeriod] = useState("month");
+  const [selectedPeriod, setSelectedPeriod] = useState("day");
   const [customFrom, setCustomFrom] = useState(null);
   const [customTo, setCustomTo] = useState(null);
   const [customRangeOpen, setCustomRangeOpen] = useState(false);
@@ -632,10 +632,11 @@ export function DashboardPage({
   }, [usageLimits]);
 
   const detailsDateKey = useMemo(() => {
-    if (period === "day") return "hour";
+    // 联动时，当 custom 周期且 selectedDay 范围为单天时，细节展示同样采用小时级别数据
+    if (period === "day" || (period === "custom" && from && from === to)) return "hour";
     if (period === "total") return "month";
     return "day";
-  }, [period]);
+  }, [period, from, to]);
   const detailsColumns = useMemo(() => getDetailsSortColumns(detailsDateKey), [detailsDateKey]);
   const dailyBreakdownDateKey = "day";
   const dailyBreakdownColumns = useMemo(() => getDetailsSortColumns(dailyBreakdownDateKey), []);
@@ -654,7 +655,8 @@ export function DashboardPage({
     return sort;
   }, [detailsDateKey, sort]);
   const detailsRows = useMemo(() => {
-    if (period === "day") {
+    // 联动单天时，从 trendRows (已切为 hourly 模式) 中过滤出小时级记录展示
+    if (period === "day" || (period === "custom" && from && from === to)) {
       return Array.isArray(trendRows) ? trendRows.filter((row) => row?.hour && !row?.future) : [];
     }
     if (period === "total") {
@@ -724,11 +726,12 @@ export function DashboardPage({
   );
   const trendRowsForDisplay = useMemo(() => {
     if (useDailyTrend) return daily;
-    if (period === "day") {
+    // 联动单天时，同样按 hour 维度过滤并展示趋势图
+    if (period === "day" || (period === "custom" && from && from === to)) {
       return Array.isArray(trendRows) ? trendRows.filter((row) => row?.hour) : [];
     }
     return trendRows;
-  }, [daily, period, trendRows, useDailyTrend]);
+  }, [daily, period, trendRows, useDailyTrend, from, to]);
   const trendFromForDisplay = useDailyTrend ? from : trendFrom;
   const trendToForDisplay = useDailyTrend ? to : trendTo;
 
@@ -824,7 +827,7 @@ export function DashboardPage({
     return count;
   }, [signedIn, mockEnabled, heatmap?.active_days, heatmap?.weeks, heatmapDaily]);
 
-  const [prevPeriod, setPrevPeriod] = useState("month");
+  const [prevPeriod, setPrevPeriod] = useState("day");
   const handlePeriodChange = useCallback((p) => {
     if (p === "custom") {
       setPrevPeriod((prev) => (prev === "custom" ? "month" : prev));
@@ -1053,6 +1056,28 @@ export function DashboardPage({
     return normalized.slice(0, 6);
   }, [publicMode, userStatus]);
 
+  // 计算热力图当前选中的天数（当 custom 且 from === to 时说明选中了具体的一天）
+  const selectedDay = useMemo(() => {
+    if (from && from === to) return from;
+    return null;
+  }, [from, to]);
+
+  // 处理热力图 Cell 点击事件实现联动
+  const handleHeatmapCellClick = useCallback((cell) => {
+    if (!cell || !cell.day) return;
+    if (selectedPeriod === "custom" && customFrom === cell.day && customTo === cell.day) {
+      // 再次点击已选中的天数，取消选中，重置为默认周期 "day" (当天)
+      setSelectedPeriod("day");
+      setCustomFrom(null);
+      setCustomTo(null);
+    } else {
+      setCustomFrom(cell.day);
+      setCustomTo(cell.day);
+      setSelectedPeriod("custom");
+    }
+    setCustomRangeOpen(false);
+  }, [selectedPeriod, customFrom, customTo]);
+
   const activityHeatmapBlock = (
     <ActivityHeatmap
       heatmap={heatmap}
@@ -1060,6 +1085,8 @@ export function DashboardPage({
       timeZoneShortLabel={timeZoneShortLabel}
       hideLegend={screenshotMode}
       defaultToLatestMonth={screenshotMode}
+      selectedDay={selectedDay}
+      onCellClick={handleHeatmapCellClick}
     />
   );
 

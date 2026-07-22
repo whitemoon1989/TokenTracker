@@ -668,6 +668,10 @@ usage.overview.model_count,ui,DashboardPage,UsageOverview,model_count,"{{count}}
 usage.overview.model_details_aria,ui,DashboardPage,UsageOverview,model_details_aria,"{{provider}} model details",,active
 usage.overview.cache_hit_rate_label,ui,DashboardPage,UsageOverview,cache_hit_rate_label,"Cache hit rate",,active
 usage.overview.cache_hit_rate_detail,ui,DashboardPage,UsageOverview,cache_hit_rate_detail,"{{reused}} reused / {{input}} input",,active
+usage.overview.bar_legend.cache_hit,ui,DashboardPage,UsageOverview,bar_legend_cache_hit,"Cache hit",,active
+usage.overview.bar_legend.cache_miss,ui,DashboardPage,UsageOverview,bar_legend_cache_miss,"Cache miss",,active
+usage.overview.bar_legend.input,ui,DashboardPage,UsageOverview,bar_legend_input,"Input",,active
+usage.overview.bar_legend.output,ui,DashboardPage,UsageOverview,bar_legend_output,"Output",,active
 usage.overview.antigravity_notice_title,ui,DashboardPage,UsageOverview,antigravity_notice_title,"Estimated tokens",,active
 usage.overview.antigravity_notice_body,ui,DashboardPage,UsageOverview,antigravity_notice_body,"Antigravity transcripts don't record real usage numbers. These counts are estimated from text length (~4 chars/token) and don't reflect Gemini's prompt-cache discount, so treat them as an upper bound, not a billing figure.",,active
 limits.panel.title,ui,LimitsPage,UsageLimitsPanel,title,"Usage Limits",,active

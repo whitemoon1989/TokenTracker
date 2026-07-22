@@ -835,3 +835,96 @@ test("WorkBuddy: computeRowCost bills auto + hy3 rows at the hy3 rate", () => {
   assert.equal(pricing.computeRowCost(row("auto")), 0.167);
   assert.equal(pricing.computeRowCost(row("hy3-preview-agent")), 0.167);
 });
+
+test("computeRowCost estimates 90% cache hit for grok source without cache data", () => {
+  pricing.resetPricingForTests();
+  // grok-4: input=$3, output=$15, cache_read=$0.75 per MTok
+  // input_tokens is the cache-MISS portion; infer cached = input * 9.
+  const row = {
+    source: "grok",
+    model: "grok-4",
+    input_tokens: 1_000_000,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+  };
+  const cost = pricing.computeRowCost(row);
+  // fresh (miss): 1_000_000 * 3/1e6 = 3
+  // inferred cached: 9_000_000 * 0.75/1e6 = 6.75
+  const expected = 3 + 6.75;
+  assert.ok(
+    Math.abs(cost - expected) < 1e-9,
+    `expected ${expected}, got ${cost} (90% cache estimation for grok)`,
+  );
+});
+
+test("computeRowCost estimates 90% cache hit for antigravity source with cache_read > 0", async () => {
+  pricing.resetPricingForTests();
+  const cachePath = tmpCachePath();
+  await pricing.ensurePricingLoaded({
+    cachePath,
+    fetchImpl: makeFetchImpl(FIXTURE_LITELLM),
+  });
+  // claude-sonnet-4-6 via antigravity: input=$3, cache_read=$0.30 per MTok
+  // input_tokens is the cache-MISS portion; infer cached = input * 9.
+  const row = {
+    source: "antigravity",
+    model: "Claude Sonnet 4.6",
+    input_tokens: 1_000_000,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+  };
+  const cost = pricing.computeRowCost(row);
+  // fresh (miss): 1_000_000 * 3/1e6 = 3
+  // inferred cached: 9_000_000 * 0.30/1e6 = 2.7
+  const expected = 3 + 2.7;
+  assert.ok(
+    Math.abs(cost - expected) < 1e-9,
+    `expected ${expected}, got ${cost} (90% cache estimation for antigravity)`,
+  );
+});
+
+test("computeRowCost does NOT estimate cache when real cache data exists", () => {
+  pricing.resetPricingForTests();
+  const row = {
+    source: "grok",
+    model: "grok-4",
+    input_tokens: 100_000,
+    cached_input_tokens: 800_000,
+    cache_creation_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+  };
+  const cost = pricing.computeRowCost(row);
+  // Real data: 100_000 * 3/1e6 + 800_000 * 0.75/1e6 = 0.3 + 0.6 = 0.9
+  const expected = 0.3 + 0.6;
+  assert.ok(
+    Math.abs(cost - expected) < 1e-9,
+    `expected ${expected}, got ${cost} (real cache data must not be overridden)`,
+  );
+});
+
+test("computeRowCost skips estimation when cache_read price is 0", async () => {
+  pricing.resetPricingForTests();
+  const cachePath = tmpCachePath();
+  await pricing.ensurePricingLoaded({
+    cachePath,
+    fetchImpl: makeFetchImpl(FIXTURE_LITELLM),
+  });
+  // antigravity-gpt-oss-120b has cache_read: 0
+  const row = {
+    source: "antigravity",
+    model: "gpt-oss-120b",
+    input_tokens: 1_000,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: 1_000,
+    reasoning_output_tokens: 0,
+  };
+  const cost = pricing.computeRowCost(row);
+  // No estimation: (1000 * 2.5 + 1000 * 10) / 1e6 = 0.0125
+  assert.equal(cost, 0.0125, "cache_read=0 must skip estimation");
+});

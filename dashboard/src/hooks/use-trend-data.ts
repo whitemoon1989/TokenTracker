@@ -52,10 +52,11 @@ export function useTrendData({
   const sharedTo = sharedRange?.to || to;
 
   const mode = useMemo(() => {
-    if (period === "day") return "hourly";
+    // 联动时，当 custom 周期且范围为单天 (from === to) 时，趋势图以 hourly (小时级) 粒度获取数据展示
+    if (period === "day" || (period === "custom" && from && from === to)) return "hourly";
     if (period === "total") return "monthly";
     return "daily";
-  }, [period]);
+  }, [period, from, to]);
 
   const storageKey = (() => {
     if (!cacheKey) return null;

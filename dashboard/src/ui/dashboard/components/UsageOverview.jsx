@@ -67,6 +67,47 @@ function getProviderColor(label, index) {
   return PROVIDER_COLORS[normalized] || `hsl(${150 + index * 40}, 60%, 45%)`;
 }
 
+// Token-type colors for the per-model stacked composition bar:
+// cache hit → green, cache miss → yellow, output → purple,
+// plain input (sources without cache accounting) → blue.
+const TOKEN_TYPE_COLORS = {
+  cacheHit: "#22c55e",   // green-500
+  cacheMiss: "#eab308",  // yellow-500
+  output: "#a855f7",     // purple-500
+  input: "#3b82f6",      // blue-500
+};
+
+function modelHasCacheAccounting(model) {
+  const b = model?.breakdown;
+  return Boolean(b && (b.cached + b.cacheCreate) > 0);
+}
+
+// Builds stacked bar segments for one model row. Each segment carries a width
+// that is a percentage of the whole track (share-scaled), so segments sum to
+// at most clampedShare and never overflow the bar.
+function buildTokenSegments(model, clampedShare, formatTokens) {
+  const b = model?.breakdown;
+  const total = Number(model?.usage) || 0;
+  if (!b || total <= 0 || clampedShare <= 0) return [];
+  const pct = (tokens) => (tokens / total) * clampedShare;
+  const segments = [];
+  if (modelHasCacheAccounting(model)) {
+    if (b.cached > 0) {
+      segments.push({ key: "cacheHit", color: TOKEN_TYPE_COLORS.cacheHit, width: pct(b.cached), tokens: b.cached, labelKey: "usage.overview.bar_legend.cache_hit" });
+    }
+    const miss = b.input + b.cacheCreate;
+    if (miss > 0) {
+      segments.push({ key: "cacheMiss", color: TOKEN_TYPE_COLORS.cacheMiss, width: pct(miss), tokens: miss, labelKey: "usage.overview.bar_legend.cache_miss" });
+    }
+  } else if (b.input > 0) {
+    segments.push({ key: "input", color: TOKEN_TYPE_COLORS.input, width: pct(b.input), tokens: b.input, labelKey: "usage.overview.bar_legend.input" });
+  }
+  if (b.output > 0) {
+    segments.push({ key: "output", color: TOKEN_TYPE_COLORS.output, width: pct(b.output), tokens: b.output, labelKey: "usage.overview.bar_legend.output" });
+  }
+  return segments.map((s) => ({ ...s, tooltip: `${copy(s.labelKey)} ${formatTokens(s.tokens)}` }));
+}
+
 function resolveContextBreakdownSource(provider) {
   const source = String(provider?.source || "").trim().toLowerCase();
   const label = String(provider?.label || "").trim().toLowerCase();
@@ -622,21 +663,63 @@ function ProviderExpandedSection({ provider, color, providerHeading, contextSour
                           </div>
                         ) : null}
 
+                        {/* Token-type legend for the stacked composition bars */}
+                        <div className="flex items-center gap-3 mb-3 text-[10px] text-oai-gray-500 dark:text-oai-gray-400">
+                          {sortedModels.some(modelHasCacheAccounting) ? (
+                            <>
+                              <span className="inline-flex items-center gap-1">
+                                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: TOKEN_TYPE_COLORS.cacheHit }} />
+                                {copy("usage.overview.bar_legend.cache_hit")}
+                              </span>
+                              <span className="inline-flex items-center gap-1">
+                                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: TOKEN_TYPE_COLORS.cacheMiss }} />
+                                {copy("usage.overview.bar_legend.cache_miss")}
+                              </span>
+                            </>
+                          ) : (
+                            <span className="inline-flex items-center gap-1">
+                              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: TOKEN_TYPE_COLORS.input }} />
+                              {copy("usage.overview.bar_legend.input")}
+                            </span>
+                          )}
+                          <span className="inline-flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: TOKEN_TYPE_COLORS.output }} />
+                            {copy("usage.overview.bar_legend.output")}
+                          </span>
+                        </div>
+
                         {/* Model rows — text line + thin muted bar as visual rhythm */}
                         <div className="space-y-3">
                           {sortedModels.map((model) => {
                             const tokensLabel = formatPositiveTokens(formatTokens, model.usage);
                             const costLabel = formatCost(model.cost, currency, rate);
                             const clampedShare = Math.max(0, Math.min(100, Number(model.share) || 0));
+                            const segments = buildTokenSegments(model, clampedShare, formatTokens);
                             return (
                               <div key={model.id || model.name}>
                                 <div className="grid grid-cols-[minmax(0,1fr)_minmax(8rem,max-content)_minmax(5.5rem,max-content)_4rem] items-baseline gap-x-3 mb-1.5">
-                                  <span
-                                    className="col-start-1 row-start-1 min-w-0 text-sm text-oai-gray-700 dark:text-oai-gray-300 truncate"
-                                    title={model.name}
-                                  >
-                                    {model.name}
-                                  </span>
+                                  <div className="col-start-1 row-start-1 min-w-0 flex items-baseline gap-x-2">
+                                    <span
+                                      className="min-w-0 shrink text-sm text-oai-gray-700 dark:text-oai-gray-300 truncate"
+                                      title={model.name}
+                                    >
+                                      {model.name}
+                                    </span>
+                                    {segments.length > 0 && (
+                                      <span className="flex shrink-0 items-baseline gap-x-2 text-[10px] leading-4 tabular-nums">
+                                        {segments.map((seg) => (
+                                          <span
+                                            key={seg.key}
+                                            className="inline-flex items-baseline gap-1 whitespace-nowrap"
+                                            style={{ color: seg.color }}
+                                          >
+                                            <span className="opacity-70">{copy(seg.labelKey)}</span>
+                                            <span title={formatTokensTooltip(seg.tokens)}>{formatTokens(seg.tokens)}</span>
+                                          </span>
+                                        ))}
+                                      </span>
+                                    )}
+                                  </div>
                                   <span
                                     title={formatTokensTooltip(model.usage)}
                                     className="col-start-2 row-start-1 text-right whitespace-nowrap text-sm text-oai-gray-500 dark:text-oai-gray-400 tabular-nums"
@@ -651,20 +734,35 @@ function ProviderExpandedSection({ provider, color, providerHeading, contextSour
                                   </span>
                                 </div>
                                 <div
-                                  className="h-[3px] bg-oai-gray-100 dark:bg-oai-gray-800 rounded-full overflow-hidden"
+                                  className="h-[3px] bg-oai-gray-100 dark:bg-oai-gray-800 rounded-full overflow-hidden flex"
                                   role="progressbar"
                                   aria-valuenow={clampedShare}
                                   aria-valuemin={0}
                                   aria-valuemax={100}
                                 >
-                                  <div
-                                    className="h-full transition-[width] duration-500 ease-out"
-                                    style={{
-                                      width: `${clampedShare}%`,
-                                      backgroundColor: color,
-                                      opacity: 0.45,
-                                    }}
-                                  />
+                                  {segments.length > 0
+                                    ? segments.map((seg) => (
+                                        <div
+                                          key={seg.key}
+                                          title={seg.tooltip}
+                                          className="h-full transition-[width] duration-500 ease-out"
+                                          style={{
+                                            width: `${Math.max(0, Math.min(100, seg.width))}%`,
+                                            backgroundColor: seg.color,
+                                            opacity: 0.8,
+                                          }}
+                                        />
+                                      ))
+                                    : (
+                                        <div
+                                          className="h-full transition-[width] duration-500 ease-out"
+                                          style={{
+                                            width: `${clampedShare}%`,
+                                            backgroundColor: color,
+                                            opacity: 0.45,
+                                          }}
+                                        />
+                                      )}
                                 </div>
                               </div>
                             );
