@@ -3186,4 +3186,9 @@ module.exports = {
   fetchGrokLimits,
   fetchZcodeLimits,
   fetchOpencodeGoLimits,
+  // Shared RPC helpers for antigravity-trajectories module
+  listAntigravityPorts,
+  probeAntigravityPort,
+  requestLocalJson,
+  antigravityDefaultBody,
 };

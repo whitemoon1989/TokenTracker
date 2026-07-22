@@ -63,6 +63,7 @@ const {
   parseGrokBuildIncremental,
   listAntigravityTranscripts,
   parseAntigravityIncremental,
+  parseAntigravityTrajectoryEvents,
   resolveCodebuddyProjectFiles,
   parseCodebuddyIncremental,
   resolveWorkbuddyProjectFiles,
@@ -92,6 +93,7 @@ const {
   resolveQoderPaths,
   parseQoderIncremental,
 } = require("../lib/rollout");
+const { fetchAntigravityTrajectoryUsage } = require("../lib/antigravity-trajectories");
 const { computeClaudeGroundTruthBuckets } = require("../lib/claude-categorizer");
 const { createProgress, renderBar, formatNumber, formatBytes } = require("../lib/progress");
 const {
@@ -766,31 +768,59 @@ async function cmdSync(argv, context = {}) {
       }
     }
     let antigravityResult = { filesProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
-    if (antigravityFiles.length > 0) {
-      if (progress?.enabled) {
-        progress.start(
-          `Parsing Antigravity ${renderBar(0)} 0/${formatNumber(antigravityFiles.length)} files | buckets 0`,
-        );
-      }
+    if (sourceAllowed("antigravity")) {
+      // Try Trajectory RPC first for exact (bill-level) token counts
+      let trajectoryUsed = false;
       try {
-        antigravityResult = await parseAntigravityIncremental({
-          sessionFiles: antigravityFiles,
-          cursors,
-          queuePath,
-          projectQueuePath,
-          onProgress: (p) => {
-            if (!progress?.enabled) return;
-            const pct = p.total > 0 ? p.index / p.total : 1;
-            progress.update(
-              `Parsing Antigravity ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(
-                p.bucketsQueued,
-              )}`,
-            );
-          },
-          source: "antigravity",
-        });
-      } catch (err) {
-        warnProviderParseFailure("Antigravity", err, opts);
+        const trajResult = await fetchAntigravityTrajectoryUsage({ cursors });
+        if (trajResult.available && trajResult.events.length > 0) {
+          if (progress?.enabled) {
+            progress.start(`Parsing Antigravity (exact RPC) ${formatNumber(trajResult.events.length)} checkpoints`);
+          }
+          const aggResult = await parseAntigravityTrajectoryEvents({
+            events: trajResult.events,
+            cursors,
+            queuePath,
+            source: "antigravity",
+          });
+          antigravityResult = {
+            filesProcessed: 0,
+            eventsAggregated: aggResult.eventsAggregated,
+            bucketsQueued: aggResult.bucketsQueued,
+          };
+          trajectoryUsed = true;
+        }
+      } catch (_trajErr) {
+        // RPC unavailable — fall through to transcript parsing
+      }
+
+      // Fallback: transcript.jsonl parsing (estimated tokens)
+      if (!trajectoryUsed && antigravityFiles.length > 0) {
+        if (progress?.enabled) {
+          progress.start(
+            `Parsing Antigravity ${renderBar(0)} 0/${formatNumber(antigravityFiles.length)} files | buckets 0`,
+          );
+        }
+        try {
+          antigravityResult = await parseAntigravityIncremental({
+            sessionFiles: antigravityFiles,
+            cursors,
+            queuePath,
+            projectQueuePath,
+            onProgress: (p) => {
+              if (!progress?.enabled) return;
+              const pct = p.total > 0 ? p.index / p.total : 1;
+              progress.update(
+                `Parsing Antigravity ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(
+                  p.bucketsQueued,
+                )}`,
+              );
+            },
+            source: "antigravity",
+          });
+        } catch (err) {
+          warnProviderParseFailure("Antigravity", err, opts);
+        }
       }
     }
 

@@ -13371,6 +13371,69 @@ async function parseAntigravityIncremental({
   return { filesProcessed, eventsAggregated, bucketsQueued, projectBucketsQueued };
 }
 
+/**
+ * Aggregate exact token usage events fetched via Antigravity Trajectory RPC
+ * into the hourly bucket system. Each event carries bill-level inputTokens /
+ * outputTokens from CORTEX_STEP_TYPE_CHECKPOINT steps.
+ *
+ * Self-contained like parseAntigravityIncremental: manages hourlyState via
+ * cursors.hourly and enqueues touched buckets to queuePath.
+ *
+ * @param {object} opts
+ * @param {Array} opts.events - [{timestamp, model, inputTokens, outputTokens}]
+ * @param {object} opts.cursors - Mutable cursors object (hourly state stored here)
+ * @param {string} opts.queuePath - Path to queue.jsonl
+ * @param {string} [opts.source="antigravity"]
+ * @returns {Promise<{eventsAggregated: number, bucketsQueued: number}>}
+ */
+async function parseAntigravityTrajectoryEvents({
+  events,
+  cursors,
+  queuePath,
+  source,
+}) {
+  const normalizedSource = normalizeSourceInput(source) || "antigravity";
+  let eventsAggregated = 0;
+
+  if (!Array.isArray(events) || events.length === 0) {
+    return { eventsAggregated: 0, bucketsQueued: 0 };
+  }
+
+  await ensureDir(path.dirname(queuePath));
+  const hourlyState = normalizeHourlyState(cursors?.hourly);
+  const touchedBuckets = new Set();
+
+  for (const event of events) {
+    if (!event || typeof event !== "object") continue;
+    const timestamp = event.timestamp;
+    if (!timestamp) continue;
+
+    const bucketStart = toUtcHalfHourStart(timestamp);
+    if (!bucketStart) continue;
+
+    const model = normalizeAntigravityTranscriptModel(event.model) || "antigravity-unknown";
+    const inputTokens = Number(event.inputTokens) || 0;
+    const outputTokens = Number(event.outputTokens) || 0;
+    if (inputTokens <= 0 && outputTokens <= 0) continue;
+
+    const delta = initTotals();
+    delta.input_tokens = inputTokens;
+    delta.output_tokens = outputTokens;
+    delta.total_tokens = inputTokens + outputTokens;
+    delta.conversation_count = 1;
+
+    const bucket = getHourlyBucket(hourlyState, normalizedSource, model, bucketStart);
+    addTotals(bucket.totals, delta);
+    touchedBuckets.add(bucketKey(normalizedSource, model, bucketStart));
+    eventsAggregated += 1;
+  }
+
+  const bucketsQueued = await enqueueTouchedBuckets({ queuePath, hourlyState, touchedBuckets });
+  hourlyState.updatedAt = new Date().toISOString();
+  cursors.hourly = hourlyState;
+  return { eventsAggregated, bucketsQueued };
+}
+
 async function parseAntigravityFile({
   filePath,
   lastLine,
@@ -13761,6 +13824,7 @@ module.exports = {
   listAntigravitySessionFiles,
   listAntigravityTranscripts,
   parseAntigravityIncremental,
+  parseAntigravityTrajectoryEvents,
   estimateAntigravityTokens,
   isCjkCodePoint,
 
