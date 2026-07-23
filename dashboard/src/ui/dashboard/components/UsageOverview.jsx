@@ -215,6 +215,8 @@ export function UsageOverview({
   summaryCostValue,
   onCostInfo,
   fleetData = [],
+  groupBy,
+  onGroupByChange,
   onRefresh,
   loading,
   announceLoading = false,
@@ -234,6 +236,30 @@ export function UsageOverview({
   selectedDevice = "",
   onDeviceChange,
 }) {
+  const [localGroupBy, setLocalGroupBy] = useState(() => {
+    if (typeof window === "undefined") return "provider";
+    try {
+      return window.localStorage.getItem("tokentracker_overview_group_by") || "provider";
+    } catch {
+      return "provider";
+    }
+  });
+
+  const activeGroupBy = groupBy ?? localGroupBy;
+  const handleGroupByChange = (mode) => {
+    if (onGroupByChange) {
+      onGroupByChange(mode);
+    }
+    setLocalGroupBy(mode);
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem("tokentracker_overview_group_by", mode);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
   const tabs = normalizePeriods(periods);
   const dateLocale = getDateFnsLocale(getCopyLocale());
   const summaryCounterValue = parseAnimatedCounterValue(String(summaryValue ?? ""));
@@ -469,6 +495,45 @@ export function UsageOverview({
         </div>
         {providers.length > 0 && (
           <div className="space-y-6">
+            {/* Group By Toggle */}
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-oai-gray-500 dark:text-oai-gray-400">
+                {copy("usage.overview.group_by_label")}
+              </span>
+              <div
+                role="radiogroup"
+                aria-label={copy("usage.overview.group_by_label")}
+                className="inline-flex items-center p-0.5 rounded-lg bg-oai-gray-100 dark:bg-oai-gray-800 text-xs font-medium"
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={activeGroupBy === "provider"}
+                  onClick={() => handleGroupByChange("provider")}
+                  className={`px-2.5 py-1 rounded-md transition-colors ${
+                    activeGroupBy === "provider"
+                      ? "bg-white dark:bg-oai-gray-900 text-oai-black dark:text-oai-white shadow-xs"
+                      : "text-oai-gray-500 dark:text-oai-gray-400 hover:text-oai-black dark:hover:text-oai-white"
+                  }`}
+                >
+                  {copy("usage.overview.group_by_provider")}
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={activeGroupBy === "model"}
+                  onClick={() => handleGroupByChange("model")}
+                  className={`px-2.5 py-1 rounded-md transition-colors ${
+                    activeGroupBy === "model"
+                      ? "bg-white dark:bg-oai-gray-900 text-oai-black dark:text-oai-white shadow-xs"
+                      : "text-oai-gray-500 dark:text-oai-gray-400 hover:text-oai-black dark:hover:text-oai-white"
+                  }`}
+                >
+                  {copy("usage.overview.group_by_model")}
+                </button>
+              </div>
+            </div>
+
             {/* Distribution Bar */}
             <div
               role="img"
@@ -531,14 +596,16 @@ export function UsageOverview({
                     }`}
                   >
                     <div className="flex items-center gap-1.5 mb-1 min-w-0">
-                      <ProviderIcon provider={provider.label} size={15} color={color} className="text-oai-gray-700 dark:text-oai-gray-300 shrink-0" />
+                      <ProviderIcon provider={provider.source || provider.label} size={15} color={color} className="text-oai-gray-700 dark:text-oai-gray-300 shrink-0" />
                       <span className="text-sm font-medium text-oai-black dark:text-oai-white truncate" title={displayLabel}>{displayLabel}</span>
                     </div>
                     <div className="text-lg font-semibold text-oai-black dark:text-oai-white tabular-nums">
                       {percentLabel}%
                     </div>
                     <div className="mt-0.5 text-[11px] text-oai-gray-400 dark:text-oai-gray-400 tabular-nums">
-                      {copy("usage.overview.model_count", { count: provider.models.length })}
+                      {activeGroupBy === "model"
+                        ? copy("usage.overview.agent_count", { count: provider.sourceCount || provider.models.length })
+                        : copy("usage.overview.model_count", { count: provider.models.length })}
                     </div>
                   </button>
                 );
@@ -559,7 +626,7 @@ export function UsageOverview({
                   .filter((p) => p.label === expandedProvider)
                   .map((provider) => {
                     const color = getProviderColor(provider.label, 0);
-                    const contextSource = resolveContextBreakdownSource(provider);
+                    const contextSource = activeGroupBy === "model" ? null : resolveContextBreakdownSource(provider);
                     const sortedModels = [...provider.models].sort(
                       (a, b) => (b.share || 0) - (a.share || 0)
                     );
@@ -577,6 +644,7 @@ export function UsageOverview({
                         from={from}
                         to={to}
                         sortedModels={sortedModels}
+                        groupBy={activeGroupBy}
                       />
                     );
                   })}
@@ -593,7 +661,7 @@ export function UsageOverview({
 // Renders a single expanded provider section. Hosts loading state for the
 // inline Context Breakdown so the spinner can sit next to the heading instead
 // of taking its own row.
-function ProviderExpandedSection({ provider, color, providerHeading, contextSource, from, to, sortedModels }) {
+function ProviderExpandedSection({ provider, color, providerHeading, contextSource, from, to, sortedModels, groupBy = "provider" }) {
   const { currency, rate } = useCurrency();
   const { formatTokens, formatTokensTooltip } = useTokenFormat();
   const [breakdownLoading, setBreakdownLoading] = useState(false);
@@ -607,7 +675,7 @@ function ProviderExpandedSection({ provider, color, providerHeading, contextSour
                             so we don't render a redundant double heading. The panel's
                             loading spinner sits inline at the right of the heading. */}
                         <div className="flex items-center gap-1.5 mb-3">
-                          <ProviderIcon provider={provider.label} size={14} color={color} className="shrink-0" />
+                          <ProviderIcon provider={provider.source || provider.label} size={14} color={color} className="shrink-0" />
                           <span className="text-sm font-medium text-oai-black dark:text-oai-white">{providerHeading}</span>
                           {contextSource && breakdownLoading && (
                             <Loader2
@@ -696,30 +764,31 @@ function ProviderExpandedSection({ provider, color, providerHeading, contextSour
                             const clampedShare = Math.max(0, Math.min(100, Number(model.share) || 0));
                             const segments = buildTokenSegments(model, clampedShare, formatTokens);
                             return (
-                              <div key={model.id || model.name}>
+                              <div key={model.id || model.name || model.source}>
                                 <div className="grid grid-cols-[minmax(0,1fr)_minmax(8rem,max-content)_minmax(5.5rem,max-content)_4rem] items-baseline gap-x-3 mb-1.5">
-                                  <div className="col-start-1 row-start-1 min-w-0 flex items-baseline gap-x-2">
                                     <span
-                                      className="min-w-0 shrink text-sm text-oai-gray-700 dark:text-oai-gray-300 truncate"
+                                      className="col-start-1 row-start-1 min-w-0 flex items-baseline gap-x-2 text-sm text-oai-gray-700 dark:text-oai-gray-300 truncate"
                                       title={model.name}
                                     >
+                                      {groupBy === "model" && (
+                                        <ProviderIcon provider={model.source || model.name} size={13} className="shrink-0 text-oai-gray-600 dark:text-oai-gray-300" />
+                                      )}
                                       {model.name}
+                                      {segments.length > 0 && (
+                                        <span className="flex shrink-0 items-baseline gap-x-2 text-[10px] leading-4 tabular-nums">
+                                          {segments.map((seg) => (
+                                            <span
+                                              key={seg.key}
+                                              className="inline-flex items-baseline gap-1 whitespace-nowrap"
+                                              style={{ color: seg.color }}
+                                            >
+                                              <span className="opacity-70">{copy(seg.labelKey)}</span>
+                                              <span title={formatTokensTooltip(seg.tokens)}>{formatTokens(seg.tokens)}</span>
+                                            </span>
+                                          ))}
+                                        </span>
+                                      )}
                                     </span>
-                                    {segments.length > 0 && (
-                                      <span className="flex shrink-0 items-baseline gap-x-2 text-[10px] leading-4 tabular-nums">
-                                        {segments.map((seg) => (
-                                          <span
-                                            key={seg.key}
-                                            className="inline-flex items-baseline gap-1 whitespace-nowrap"
-                                            style={{ color: seg.color }}
-                                          >
-                                            <span className="opacity-70">{copy(seg.labelKey)}</span>
-                                            <span title={formatTokensTooltip(seg.tokens)}>{formatTokens(seg.tokens)}</span>
-                                          </span>
-                                        ))}
-                                      </span>
-                                    )}
-                                  </div>
                                   <span
                                     title={formatTokensTooltip(model.usage)}
                                     className="col-start-2 row-start-1 text-right whitespace-nowrap text-sm text-oai-gray-500 dark:text-oai-gray-400 tabular-nums"

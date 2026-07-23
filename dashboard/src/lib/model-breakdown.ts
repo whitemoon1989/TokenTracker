@@ -33,7 +33,160 @@ export function resolveDisplayTokens(totals: any, fallback = 0) {
   return billableTokens ?? totalTokens ?? fallback;
 }
 
-export function buildFleetData(modelBreakdown: any, { copyFn }: AnyRecord = {}) {
+export function buildModelGroupedFleetData(modelBreakdown: any, { copyFn }: AnyRecord = {}) {
+  const safeCopy = typeof copyFn === "function" ? copyFn : (key: string) => key;
+  const sources: any[] = Array.isArray(modelBreakdown?.sources) ? modelBreakdown.sources : [];
+  if (!sources.length) return [];
+
+  const modelsMap = new Map<string, any>();
+
+  for (const entry of sources) {
+    const sourceKey = String(entry?.source || "").toLowerCase();
+    const sourceTotalTokens = resolveDisplayTokens(entry?.totals) ?? 0;
+    const sourceTotalCost = toFiniteNumber(entry?.totals?.total_cost_usd) ?? 0;
+    const modelsList: any[] = Array.isArray(entry?.models) ? entry.models : [];
+
+    const rawSourceCacheRead = Math.max(0, toFiniteNumber(entry?.totals?.cached_input_tokens) ?? 0);
+    const rawSourceCacheCreate = Math.max(0, toFiniteNumber(entry?.totals?.cache_creation_input_tokens) ?? 0);
+    const useEstimate =
+      rawSourceCacheRead + rawSourceCacheCreate === 0 && ESTIMATED_CACHE_SOURCES.has(sourceKey);
+
+    for (const model of modelsList) {
+      const rawModelTokens = resolveDisplayTokens(model?.totals);
+      if (!Number.isFinite(rawModelTokens) || rawModelTokens <= 0) continue;
+
+      const rawModelInput = Math.max(0, toFiniteNumber(model?.totals?.input_tokens) ?? 0);
+      const rawModelCached = Math.max(0, toFiniteNumber(model?.totals?.cached_input_tokens) ?? 0);
+      const rawModelCacheCreate = Math.max(0, toFiniteNumber(model?.totals?.cache_creation_input_tokens) ?? 0);
+
+      const modelUseEstimate = useEstimate && rawModelCached + rawModelCacheCreate === 0;
+      const modelInferredCached = modelUseEstimate
+        ? Math.round(rawModelInput * (ESTIMATED_CACHE_HIT_RATE / (1 - ESTIMATED_CACHE_HIT_RATE)))
+        : 0;
+
+      const modelTokens = rawModelTokens + modelInferredCached;
+      const name = resolveModelName(model, safeCopy("shared.placeholder.short"));
+      const id = resolveModelId(model) || normalizeModelId(name) || name;
+      const key = id.toLowerCase();
+
+      const explicitModelCost = toFiniteNumber(model?.totals?.total_cost_usd);
+      const modelCost =
+        explicitModelCost != null
+          ? explicitModelCost
+          : sourceTotalCost > 0 && sourceTotalTokens > 0
+            ? (modelTokens / sourceTotalTokens) * sourceTotalCost
+            : 0;
+
+      const output =
+        Math.max(0, toFiniteNumber(model?.totals?.output_tokens) ?? 0) +
+        Math.max(0, toFiniteNumber(model?.totals?.reasoning_output_tokens) ?? 0);
+      const cached = modelUseEstimate ? modelInferredCached : rawModelCached;
+
+      let modelAgg = modelsMap.get(key);
+      if (!modelAgg) {
+        modelAgg = {
+          id,
+          name,
+          totalTokens: 0,
+          totalCost: 0,
+          rawInput: 0,
+          rawCacheRead: 0,
+          rawCacheCreate: 0,
+          rawOutput: 0,
+          sourcesMap: new Map(),
+        };
+        modelsMap.set(key, modelAgg);
+      }
+
+      modelAgg.totalTokens += modelTokens;
+      modelAgg.totalCost += modelCost;
+      modelAgg.rawInput += rawModelInput;
+      modelAgg.rawCacheRead += cached;
+      modelAgg.rawCacheCreate += rawModelCacheCreate;
+      modelAgg.rawOutput += output;
+
+      let srcAgg = modelAgg.sourcesMap.get(sourceKey);
+      if (!srcAgg) {
+        srcAgg = {
+          source: entry.source || sourceKey,
+          tokens: 0,
+          cost: 0,
+          rawInput: 0,
+          rawOutput: 0,
+          rawCached: 0,
+          rawCacheCreate: 0,
+        };
+        modelAgg.sourcesMap.set(sourceKey, srcAgg);
+      }
+
+      srcAgg.tokens += modelTokens;
+      srcAgg.cost = (srcAgg.cost ?? 0) + modelCost;
+      srcAgg.rawInput += rawModelInput;
+      srcAgg.rawOutput += output;
+      srcAgg.rawCached += cached;
+      srcAgg.rawCacheCreate += rawModelCacheCreate;
+    }
+  }
+
+  const grandTotal = Array.from(modelsMap.values()).reduce((acc: number, entry: any) => acc + entry.totalTokens, 0);
+  if (!grandTotal || !modelsMap.size) return [];
+
+  return Array.from(modelsMap.values())
+    .slice()
+    .sort((a: any, b: any) => b.totalTokens - a.totalTokens)
+    .map((item: any) => {
+      const totalPercentRaw = grandTotal > 0 ? (item.totalTokens / grandTotal) * 100 : 0;
+      const totalPercent = Number.isFinite(totalPercentRaw) ? totalPercentRaw.toFixed(2) : "0.00";
+
+      const cacheInputTokens = item.rawInput + item.rawCacheRead + item.rawCacheCreate;
+      const hasCacheActivity = item.rawCacheRead + item.rawCacheCreate > 0;
+      const cacheHitRate =
+        hasCacheActivity && cacheInputTokens > 0
+          ? Math.round((item.rawCacheRead / cacheInputTokens) * 100)
+          : null;
+
+      const modelSources = Array.from(item.sourcesMap.values())
+        .slice()
+        .sort((a: any, b: any) => b.tokens - a.tokens)
+        .map((src: any) => {
+          const share =
+            item.totalTokens > 0 ? Math.round((src.tokens / item.totalTokens) * 1000) / 10 : 0;
+          return {
+            id: src.source,
+            name: String(src.source).toUpperCase(),
+            source: src.source,
+            share,
+            usage: src.tokens,
+            cost: src.cost,
+            breakdown: {
+              input: src.rawInput,
+              output: src.rawOutput,
+              cached: src.rawCached,
+              cacheCreate: src.rawCacheCreate,
+            },
+          };
+        });
+
+      return {
+        source: item.id,
+        label: item.name,
+        totalPercent: String(totalPercent),
+        totalPercentValue: totalPercentRaw,
+        usd: item.totalCost,
+        usage: item.totalTokens,
+        cacheHitRate,
+        cacheReusedTokens: item.rawCacheRead,
+        cacheInputTokens,
+        models: modelSources,
+        sourceCount: item.sourcesMap.size,
+      };
+    });
+}
+
+export function buildFleetData(modelBreakdown: any, { copyFn, groupBy = "provider" }: AnyRecord = {}) {
+  if (groupBy === "model") {
+    return buildModelGroupedFleetData(modelBreakdown, { copyFn });
+  }
   const safeCopy = typeof copyFn === "function" ? copyFn : (key: string) => key;
   const sources: any[] = Array.isArray(modelBreakdown?.sources) ? modelBreakdown.sources : [];
   const normalizedSources = sources

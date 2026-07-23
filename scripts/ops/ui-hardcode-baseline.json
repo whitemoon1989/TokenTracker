@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-07-18T14:32:38.830Z",
+  "generatedAt": "2026-07-22T08:09:57.837Z",
   "root": "dashboard/src",
   "rules": {
     "colors": "hex/rgb(a) literals",
     "rawText": "JSX text nodes containing letters or digits"
   },
   "totals": {
-    "colors": 371,
+    "colors": 375,
     "rawText": 192
   },
   "files": {
@@ -16,6 +16,25 @@
       "rawTextTokens": [
         ") : avatarSrc && !avatarFailed ? (",
         ") : initialsFromName(displayName) === \"?\" ? ("
+      ]
+    },
+    "dashboard/src/components/leaderboard/CommunityStatsModal.jsx": {
+      "colors": 0,
+      "rawText": 7,
+      "rawTextTokens": [
+        "(max.value",
+        "; if (normalized === \"win32\") return",
+        "; return",
+        "; return ("
+      ]
+    },
+    "dashboard/src/components/leaderboard/LeaderboardProfileModal.jsx": {
+      "colors": 6,
+      "rawText": 3,
+      "rawTextTokens": [
+        "0 && n",
+        "1 && (",
+        "= 1)) && ("
       ]
     },
     "dashboard/src/components/LeaderboardSummaryCard.test.jsx": {
@@ -28,31 +47,6 @@
       "rawText": 1,
       "rawTextTokens": [
         "); const GITHUB_ICON = ("
-      ]
-    },
-    "dashboard/src/components/SortableColumnHeader.jsx": {
-      "colors": 4,
-      "rawText": 0,
-      "rawTextTokens": []
-    },
-    "dashboard/src/components/leaderboard/CommunityStatsModal.jsx": {
-      "colors": 0,
-      "rawText": 8,
-      "rawTextTokens": [
-        "(max.value",
-        "; if (normalized === \"win32\") return",
-        "; return",
-        "; return (",
-        "Math.max(max, Number(band.developer_share) || 0), 0) || 1; return ("
-      ]
-    },
-    "dashboard/src/components/leaderboard/LeaderboardProfileModal.jsx": {
-      "colors": 6,
-      "rawText": 3,
-      "rawTextTokens": [
-        "0 && n",
-        "1 && (",
-        "= 1)) && ("
       ]
     },
     "dashboard/src/components/settings/AccountSection.jsx": {
@@ -68,6 +62,11 @@
       "rawTextTokens": [
         "GitHub"
       ]
+    },
+    "dashboard/src/components/SortableColumnHeader.jsx": {
+      "colors": 4,
+      "rawText": 0,
+      "rawTextTokens": []
     },
     "dashboard/src/contexts/LoginModalContext.jsx": {
       "colors": 0,
@@ -422,8 +421,8 @@
       ]
     },
     "dashboard/src/ui/dashboard/components/UsageOverview.jsx": {
-      "colors": 13,
-      "rawText": 3,
+      "colors": 17,
+      "rawText": 4,
       "rawTextTokens": [
         "0 && (",
         "0); return (",
@@ -461,15 +460,6 @@
         "zh-tw"
       ]
     },
-    "dashboard/src/ui/marketing/MarketingLanding.jsx": {
-      "colors": 0,
-      "rawText": 3,
-      "rawTextTokens": [
-        ") : ( // 未登录：Sign In 展示为主行动实色按钮，点击唤起 Modal",
-        ") : signedIn ? ( // 已登录：Open Dashboard 升级为主行动实色按钮",
-        "Token Tracker"
-      ]
-    },
     "dashboard/src/ui/marketing/components/BorderGlow.jsx": {
       "colors": 6,
       "rawText": 0,
@@ -479,6 +469,15 @@
       "colors": 2,
       "rawText": 0,
       "rawTextTokens": []
+    },
+    "dashboard/src/ui/marketing/MarketingLanding.jsx": {
+      "colors": 0,
+      "rawText": 3,
+      "rawTextTokens": [
+        ") : ( // 未登录：Sign In 展示为主行动实色按钮，点击唤起 Modal",
+        ") : signedIn ? ( // 已登录：Open Dashboard 升级为主行动实色按钮",
+        "Token Tracker"
+      ]
     },
     "dashboard/src/ui/marketing/v3/CapabilitiesSection.jsx": {
       "colors": 1,
@@ -514,13 +513,13 @@
         "0 ? Math.max(6, Math.round((tokens / maxTokens) * 100)) : 0; return ("
       ]
     },
-    "dashboard/src/ui/marketing/v3/TokenGalaxy.jsx": {
-      "colors": 2,
+    "dashboard/src/ui/marketing/v3/palette.js": {
+      "colors": 21,
       "rawText": 0,
       "rawTextTokens": []
     },
-    "dashboard/src/ui/marketing/v3/palette.js": {
-      "colors": 21,
+    "dashboard/src/ui/marketing/v3/TokenGalaxy.jsx": {
+      "colors": 2,
       "rawText": 0,
       "rawTextTokens": []
     },

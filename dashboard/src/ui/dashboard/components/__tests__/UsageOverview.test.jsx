@@ -301,4 +301,44 @@ describe("UsageOverview", () => {
     ).toBeNull();
     expect(screen.getByTitle("1,234,567,890")).toHaveTextContent("1.23B");
   });
+
+  it("renders group by toggle and switches grouping between provider and model", async () => {
+    const user = userEvent.setup();
+    const onGroupByChange = vi.fn();
+
+    render(
+      <UsageOverview
+        period="month"
+        periods={[]}
+        summaryLabel="Total"
+        summaryValue="3.0M"
+        groupBy="provider"
+        onGroupByChange={onGroupByChange}
+        fleetData={[
+          {
+            source: "deepseek-v4-flash",
+            label: "deepseek-v4-flash",
+            totalPercent: "100.0",
+            totalPercentValue: 100,
+            usage: 3_000_000,
+            usd: 0.03,
+            sourceCount: 2,
+            models: [
+              { id: "codebuddy", name: "CODEBUDDY", source: "codebuddy", share: 66.7, usage: 2_000_000, cost: 0.02 },
+              { id: "antigravity", name: "ANTIGRAVITY", source: "antigravity", share: 33.3, usage: 1_000_000, cost: 0.01 },
+            ],
+          },
+        ]}
+      />
+    );
+
+    const providerRadio = screen.getByRole("radio", { name: copy("usage.overview.group_by_provider") });
+    const modelRadio = screen.getByRole("radio", { name: copy("usage.overview.group_by_model") });
+
+    expect(providerRadio).toHaveAttribute("aria-checked", "true");
+    expect(modelRadio).toHaveAttribute("aria-checked", "false");
+
+    await user.click(modelRadio);
+    expect(onGroupByChange).toHaveBeenCalledWith("model");
+  });
 });

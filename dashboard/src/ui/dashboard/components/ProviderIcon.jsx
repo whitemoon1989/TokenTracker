@@ -319,13 +319,17 @@ const PROVIDER_LOGO_MAP = {
   CODEX: "/brand-logos/codex.svg",
   DEEPSEEK: "/brand-logos/deepseek.svg",
   GEMINI: "/brand-logos/gemini.svg",
+  HUNYUAN: "/brand-logos/hunyuan.svg",
+  HY3: "/brand-logos/hunyuan.svg",
   "KILO-CLI": "/brand-logos/kilo.svg",
   "KILO-CODE": "/brand-logos/kilo.svg",
   MIMO: "/brand-logos/mimo.svg",
+  MINIMAX: "/brand-logos/minimax.svg",
   OPENCLAW: "/brand-logos/openclaw.svg",
   OPENCODE: "/brand-logos/opencode.svg",
   TRAE: "/brand-logos/trae.png",
   "TRAE-SOLO": "/brand-logos/trae.png",
+  WORKBUDDY: "/brand-logos/workbuddy.svg",
 };
 
 // AnythingLLM publishes this compact mark in white. Keep the official asset
@@ -370,12 +374,37 @@ function PlaceholderIcon({ size = 16, className = "" }) {
   );
 }
 
+function resolveProviderKey(provider) {
+  if (!provider || typeof provider !== "string") return "";
+  const normalized = provider.toUpperCase();
+  if (PROVIDER_LOGO_MAP[normalized] || PROVIDER_ICON_MAP[normalized]) {
+    return normalized;
+  }
+  if (normalized.includes("ANTIGRAVITY")) return "ANTIGRAVITY";
+  if (normalized.includes("HUNYUAN") || normalized.includes("HY3")) return "HY3";
+  if (normalized.includes("WORKBUDDY")) return "WORKBUDDY";
+  if (normalized.includes("MINIMAX") || normalized.includes("ABAB")) return "MINIMAX";
+  if (normalized.includes("DEEPSEEK")) return "DEEPSEEK";
+  if (normalized.includes("CLAUDE") || normalized.includes("ANTHROPIC")) return "CLAUDE";
+  if (normalized.includes("GPT") || normalized.includes("O1") || normalized.includes("O3") || normalized.includes("CODEX") || normalized.includes("OPENAI")) return "CODEX";
+  if (normalized.includes("GEMINI")) return "GEMINI";
+  if (normalized.includes("GROK")) return "GROK";
+  if (normalized.includes("KIMI") || normalized.includes("MOONSHOT")) return "KIMI";
+  if (normalized.includes("OPENCODE")) return "OPENCODE";
+  if (normalized.includes("MIMO")) return "MIMO";
+  if (normalized.includes("KILO")) return "KILO-CLI";
+  if (normalized.includes("QWEN")) return "OPENCODE";
+  if (normalized.includes("ZCODE") || normalized.includes("GLM")) return "ZCODE";
+  if (normalized.includes("HERMES")) return "HERMES";
+  return normalized;
+}
+
 /**
  * Renders a provider's brand icon. Prefers the original multi-color logo from
  * /brand-logos/ when available, otherwise falls back to a mono SVG (currentColor).
  */
 export function ProviderIcon({ provider, size = 16, color, className = "" }) {
-  const normalized = provider?.toUpperCase?.() || "";
+  const normalized = resolveProviderKey(provider);
   const logoSrc = PROVIDER_LOGO_MAP[normalized];
 
   if (logoSrc) {

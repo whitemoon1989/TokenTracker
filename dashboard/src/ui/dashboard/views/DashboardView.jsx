@@ -167,6 +167,8 @@ export function DashboardView(props) {
     announceUsageLoading,
     initialDashboardLoading,
     fleetData,
+    groupBy,
+    onGroupByChange,
     hasDetailsActual,
     dailyEmptyPrefix,
     installSyncCmd,
@@ -355,6 +357,8 @@ export function DashboardView(props) {
               summaryCostValue={summaryCostValue}
               onCostInfo={costInfoEnabled ? openCostModal : null}
               fleetData={fleetData}
+              groupBy={groupBy}
+              onGroupByChange={onGroupByChange}
               onRefresh={screenshotMode ? null : refreshAll}
               loading={usageLoadingState}
               announceLoading={announceUsageLoading}

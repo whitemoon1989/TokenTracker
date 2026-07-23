@@ -1209,9 +1209,29 @@ export function DashboardPage({
     [summary?.conversation_count],
   );
 
+  const [groupBy, setGroupBy] = useState(() => {
+    if (typeof window === "undefined") return "provider";
+    try {
+      return window.localStorage.getItem("tokentracker_overview_group_by") || "provider";
+    } catch {
+      return "provider";
+    }
+  });
+
+  const handleGroupByChange = useCallback((mode) => {
+    setGroupBy(mode);
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem("tokentracker_overview_group_by", mode);
+      } catch {
+        /* ignore */
+      }
+    }
+  }, []);
+
   const fleetData = useMemo(
-    () => buildFleetData(modelBreakdown, { copyFn: copy }),
-    [modelBreakdown],
+    () => buildFleetData(modelBreakdown, { copyFn: copy, groupBy }),
+    [modelBreakdown, groupBy],
   );
   const topModels = useMemo(
     () => buildTopModels(modelBreakdown, { limit: 3, copyFn: copy }),
@@ -1400,6 +1420,8 @@ export function DashboardPage({
       timeZoneRangeLabel={timeZoneRangeLabel}
       usageSourceLabel={usageSourceLabel}
       fleetData={fleetData}
+      groupBy={groupBy}
+      onGroupByChange={handleGroupByChange}
       hasDetailsActual={hasDetailsActual}
       dailyEmptyPrefix={dailyEmptyPrefix}
       installSyncCmd={installSyncCmd}

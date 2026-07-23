@@ -23,13 +23,24 @@ describe("ProviderIcon", () => {
     expect(placeholder?.querySelector("circle")).not.toBeNull();
   });
 
-  it("renders the MiniMax brand mark instead of the unknown-provider placeholder", () => {
+  it("renders the MiniMax brand logo", () => {
     const { container } = render(<ProviderIcon provider="MINIMAX" size={18} />);
-    const icon = container.querySelector("svg");
+    const icon = container.querySelector('img[src="/brand-logos/minimax.svg"]');
 
+    expect(icon).not.toBeNull();
     expect(icon).toHaveAttribute("width", "18");
     expect(icon).toHaveAttribute("height", "18");
-    expect(icon?.querySelector("path")).not.toBeNull();
-    expect(icon?.querySelector("circle")).toBeNull();
+  });
+
+  it("resolves Antigravity-unknown to the Antigravity brand logo", () => {
+    const { container } = render(<ProviderIcon provider="Antigravity-unknown" size={16} />);
+    const icon = container.querySelector('img[src="/brand-logos/antigravity.svg"]');
+    expect(icon).not.toBeNull();
+  });
+
+  it("resolves HY3 to the Hunyuan brand logo", () => {
+    const { container } = render(<ProviderIcon provider="HY3" size={16} />);
+    const icon = container.querySelector('img[src="/brand-logos/hunyuan.svg"]');
+    expect(icon).not.toBeNull();
   });
 });

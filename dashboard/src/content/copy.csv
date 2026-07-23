@@ -665,6 +665,10 @@ usage.overview.percent_below_threshold,ui,DashboardPage,UsageOverview,percent_be
 usage.overview.expand,ui,DashboardPage,UsageOverview,expand,"expand",,active
 usage.overview.collapse,ui,DashboardPage,UsageOverview,collapse,"collapse",,active
 usage.overview.model_count,ui,DashboardPage,UsageOverview,model_count,"{{count}} models",,active
+usage.overview.agent_count,ui,DashboardPage,UsageOverview,agent_count,"{{count}} agents",,active
+usage.overview.group_by_label,ui,DashboardPage,UsageOverview,group_by_label,"Group by",,active
+usage.overview.group_by_provider,ui,DashboardPage,UsageOverview,group_by_provider,"By Agent",,active
+usage.overview.group_by_model,ui,DashboardPage,UsageOverview,group_by_model,"By Model",,active
 usage.overview.model_details_aria,ui,DashboardPage,UsageOverview,model_details_aria,"{{provider}} model details",,active
 usage.overview.cache_hit_rate_label,ui,DashboardPage,UsageOverview,cache_hit_rate_label,"Cache hit rate",,active
 usage.overview.cache_hit_rate_detail,ui,DashboardPage,UsageOverview,cache_hit_rate_detail,"{{reused}} reused / {{input}} input",,active
