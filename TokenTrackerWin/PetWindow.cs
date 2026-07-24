@@ -40,6 +40,8 @@ internal sealed class PetWindow : Window
     private readonly System.Windows.Threading.DispatcherTimer _saveTimer;
     private readonly System.Windows.Threading.DispatcherTimer _hoverTimer;
     private readonly System.Windows.Threading.DispatcherTimer _clickThroughTimer;
+    private readonly System.Windows.Threading.DispatcherTimer _revealAutoTuckTimer;
+    private bool _autoTuckedForCurrentHover;
     private bool _lastHover;
     private int _lastLookDirection = -1;
     private bool _clickThrough;
@@ -150,6 +152,21 @@ internal sealed class PetWindow : Window
             Interval = TimeSpan.FromMilliseconds(16),
         };
         _clickThroughTimer.Tick += (_, _) => ClickThroughTick();
+
+        _revealAutoTuckTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(2),
+        };
+        _revealAutoTuckTimer.Tick += (_, _) =>
+        {
+            _revealAutoTuckTimer.Stop();
+            if (_miniMode && _isRevealed)
+            {
+                _isRevealed = false;
+                _autoTuckedForCurrentHover = true;
+                ApplyEdgePlacement(animated: true);
+            }
+        };
 
         Loaded += async (_, _) => await InitializeWebViewAsync();
         _server.StatusChanged += OnServerStatusChanged;
@@ -278,6 +295,7 @@ internal sealed class PetWindow : Window
                 case "pet:drag-left":
                 case "pet:drag-right":
                 {
+                    _revealAutoTuckTimer.Stop();
                     // Hand the press off to the OS so the borderless window moves natively.
                     // finally guarantees _isDragging resets even if the modal move loop
                     // throws; a stuck true would permanently disable hover/click-through
@@ -308,6 +326,7 @@ internal sealed class PetWindow : Window
                     break;
                 }
                 case "pet:context-menu":
+                    _revealAutoTuckTimer.Stop();
                     ContextMenuRequested?.Invoke();
                     break;
             }
@@ -330,7 +349,8 @@ internal sealed class PetWindow : Window
     private void NavigateWhenServerReady()
     {
         if (!_coreReady || _server.Status != ServerManager.ServerStatus.Running) return;
-        _webView.CoreWebView2.Navigate(_server.BaseUrl + "/pet.html?app=1");
+        var url = $"{_server.BaseUrl}/pet.html?app=1&v={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        _webView.CoreWebView2.Navigate(url);
     }
 
     // ── Public API ─────────────────────────────────────────────────────
@@ -399,20 +419,21 @@ internal sealed class PetWindow : Window
             double spriteBottom = tl.Y + _bubbleBand + SpriteSize + pad;
             if (_miniMode)
             {
-                // Anchor the hover test to the *target* geometry (both peek and revealed
-                // states hug the right work-area edge), NOT the live window X, which is
-                // mid-slide during ApplyEdgePlacement. Reading the moving rect here would
-                // let the inside/outside result flip against the animating edge and re-
-                // toggle _isRevealed, cancelling and restarting the slide — the retract
-                // stutter. Using _isRevealed as the reference gives stable hysteresis:
-                // tucked → only the peek strip is "inside"; revealed → the full sprite is.
                 var wa = SystemParameters.WorkArea;
-                double targetLeft = _isRevealed ? wa.Right - Width : TuckedLeft(wa.Right);
-                double leftX = targetLeft + SpriteLeftInset - pad;
-                double spriteRight = targetLeft + SpriteLeftInset + SpriteSize + pad;
-                double rightLimit = wa.Right + EdgeTolerance; // cursor clamps at the screen edge
-                inside = p.X >= leftX && p.X < Math.Min(spriteRight, rightLimit)
+                double rightLimit = wa.Right + EdgeTolerance;
+                double tuckedLeftX = TuckedLeft(wa.Right) + SpriteLeftInset - pad;
+                bool isOverTuckedStrip = p.X >= tuckedLeftX && p.X <= rightLimit
                     && p.Y >= spriteTop && p.Y < spriteBottom;
+                double revealedLeftX = wa.Right - Width + SpriteLeftInset - pad;
+                bool isOverRevealedZone = p.X >= revealedLeftX && p.X <= rightLimit
+                    && p.Y >= spriteTop && p.Y < spriteBottom;
+
+                inside = _isRevealed ? isOverRevealedZone : isOverTuckedStrip;
+
+                if (p.X < tuckedLeftX || p.Y < spriteTop || p.Y >= spriteBottom)
+                {
+                    _autoTuckedForCurrentHover = false;
+                }
             }
             else
             {
@@ -447,15 +468,64 @@ internal sealed class PetWindow : Window
 
         if (_miniMode)
         {
-            if (inside && !_isRevealed)
+            var wa = SystemParameters.WorkArea;
+            double rightLimit = wa.Right + EdgeTolerance;
+            double pad = Math.Max(8, SpriteSize * 0.08);
+            System.Windows.Point tl;
+            try { tl = PointToScreen(new System.Windows.Point(0, 0)); } catch { return; }
+            double spriteTop = tl.Y + _bubbleBand - pad;
+            double spriteBottom = tl.Y + _bubbleBand + SpriteSize + pad;
+
+            // 1. Tucked strip edge trigger zone
+            double tuckedLeftX = TuckedLeft(wa.Right) + SpriteLeftInset - pad;
+            bool isOverTuckedStrip = p.X >= tuckedLeftX && p.X <= rightLimit
+                && p.Y >= spriteTop && p.Y < spriteBottom;
+
+            // 2. Revealed pet sprite body zone (cursor directly on top of the pet)
+            double revealedSpriteLeftX = wa.Right - Width + SpriteLeftInset - pad;
+            double revealedSpriteRightX = wa.Right - Width + SpriteLeftInset + SpriteSize + pad;
+            bool isOverRevealedSprite = p.X >= revealedSpriteLeftX && p.X <= revealedSpriteRightX
+                && p.Y >= spriteTop && p.Y < spriteBottom;
+
+            // 3. Total revealed zone
+            bool isOverRevealedZone = p.X >= revealedSpriteLeftX && p.X <= rightLimit
+                && p.Y >= spriteTop && p.Y < spriteBottom;
+
+            inside = _isRevealed ? isOverRevealedZone : isOverTuckedStrip;
+
+            if (p.X < tuckedLeftX || p.Y < spriteTop || p.Y >= spriteBottom)
+            {
+                _autoTuckedForCurrentHover = false;
+            }
+
+            if (isOverTuckedStrip && !_isRevealed && !_autoTuckedForCurrentHover)
             {
                 _isRevealed = true;
                 ApplyEdgePlacement(animated: true);
+                _revealAutoTuckTimer.Stop();
+                _revealAutoTuckTimer.Start();
             }
-            else if (!inside && _isRevealed)
+            else if (_isRevealed)
             {
-                _isRevealed = false;
-                ApplyEdgePlacement(animated: true);
+                if (isOverRevealedSprite)
+                {
+                    // Cursor is on the revealed pet body -> prevent tucking!
+                    _revealAutoTuckTimer.Stop();
+                }
+                else
+                {
+                    // Cursor is NOT on the pet body (in other positions):
+                    if (!isOverRevealedZone)
+                    {
+                        _revealAutoTuckTimer.Stop();
+                        _isRevealed = false;
+                        ApplyEdgePlacement(animated: true);
+                    }
+                    else if (!_revealAutoTuckTimer.IsEnabled)
+                    {
+                        _revealAutoTuckTimer.Start();
+                    }
+                }
             }
         }
 
@@ -813,6 +883,7 @@ internal sealed class PetWindow : Window
         _saveTimer.Stop();
         _hoverTimer.Stop();
         _clickThroughTimer.Stop();
+        _revealAutoTuckTimer.Stop();
         _server.StatusChanged -= OnServerStatusChanged;
         base.OnClosing(e);
     }
@@ -997,6 +1068,25 @@ internal sealed class PetWindow : Window
         if (double.IsNaN(x) || double.IsNaN(y)) return;
 
         var wa = SystemParameters.WorkArea;
+        // 如果已在迷你模式，先检查窗口是否还在边缘位置（收起或展开状态）；
+        // 如果还在边缘则保持迷你模式，避免因展开动画或气泡高度变化导致
+        // _saveTimer 触发 SavePlacement 后错误退出迷你模式。
+        if (_miniMode)
+        {
+            double revealedX = wa.Right - Width;
+            double tuckedX = TuckedLeft(wa.Right);
+            bool stillAtEdge = Math.Abs(x - revealedX) < 1 || Math.Abs(x - tuckedX) < 1;
+            if (stillAtEdge)
+            {
+                // 窗口仍在边缘位置（收起或展开中），保持迷你模式不变
+                return;
+            }
+            // 窗口已被拖离边缘 — 退出迷你模式，继续执行下方正常保存逻辑
+            _miniMode = false;
+            _isRevealed = false;
+            PushMiniMode(false);
+        }
+
         // Snap to right edge of screen
         if (SpriteRight(x) >= wa.Right - SnapMargin)
         {
@@ -1012,14 +1102,6 @@ internal sealed class PetWindow : Window
         }
         else
         {
-            if (_miniMode)
-            {
-                _miniMode = false;
-                _isRevealed = false;
-                PushMiniMode(false);
-                // Return to normal layout y
-                Left = x;
-            }
             WriteSettings(s =>
             {
                 s["PetX"] = x;

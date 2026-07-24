@@ -7,21 +7,25 @@ export const PALETTES = {
   emerald: {
     light: ["#ebedf0", "#a7f3d0", "#6ee7b7", "#34d399", "#10b981"],
     dark: ["#2d333b", "#065f46", "#059669", "#10b981", "#34d399"],
+    extreme: { light: "#f43f5e", dark: "#fb7185" },
     gridColor: { light: "rgba(16, 185, 129, 0.12)", dark: "rgba(52, 211, 153, 0.08)" }
   },
   ocean: {
     light: ["#f1f5f9", "#93c5fd", "#60a5fa", "#3b82f6", "#1d4ed8"],
     dark: ["#1e293b", "#1e3a8a", "#2563eb", "#3b82f6", "#60a5fa"],
+    extreme: { light: "#f97316", dark: "#fb923c" },
     gridColor: { light: "rgba(59, 130, 246, 0.12)", dark: "rgba(96, 165, 250, 0.08)" }
   },
   neon: {
     light: ["#faf5ff", "#ebd5ff", "#c084fc", "#a855f7", "#7e22ce"],
     dark: ["#2e1065", "#581c87", "#8b5cf6", "#a855f7", "#c084fc"],
+    extreme: { light: "#eab308", dark: "#facc15" },
     gridColor: { light: "rgba(168, 85, 247, 0.12)", dark: "rgba(192, 132, 252, 0.08)" }
   },
   amber: {
     light: ["#fffbeb", "#fde68a", "#f59e0b", "#d97706", "#b45309"],
     dark: ["#451a03", "#78350f", "#b45309", "#d97706", "#f59e0b"],
+    extreme: { light: "#ef4444", dark: "#f87171" },
     gridColor: { light: "rgba(245, 158, 11, 0.12)", dark: "rgba(245, 158, 11, 0.08)" }
   }
 };
@@ -366,9 +370,35 @@ export function ActivityHeatmap3D({
   const SIZE = UNIT_SIZE - GAP;
   const HEIGHT_MAX = interactive ? 38 : 28;
 
-  const levelToHeight = (level) => {
-    // 0 级保留极薄的边缘厚度以供辨认
-    return Math.max(1.8, (Number(level) / 4) * HEIGHT_MAX);
+  // 取全图绝对最大 Token 消耗量，作为 100% 满高度基准
+  const absoluteMaxValue = useMemo(() => {
+    let max = 0;
+    cells.forEach((c) => {
+      const v = Number(c.value) || 0;
+      if (v > max) max = v;
+    });
+    return max > 0 ? max : 1;
+  }, [cells]);
+
+  // 100% 纯粹如实反映：柱高严格按实际 Token 用量在 1.8px 至 HEIGHT_MAX 之间连续线性等比映射，无任何封顶限制
+  const getCellHeightAndColor = (c) => {
+    const val = Number(c.value) || 0;
+    if (val <= 0) {
+      return {
+        height: 1.8,
+        baseColor: colors[0],
+      };
+    }
+
+    const ratio = Math.min(1, Math.max(0, val / absoluteMaxValue));
+    const MIN_HEIGHT = 1.8;
+    const height = MIN_HEIGHT + ratio * (HEIGHT_MAX - MIN_HEIGHT);
+    const baseColor = colors[Math.min(4, Math.max(0, Number(c.level) || 0))];
+
+    return {
+      height,
+      baseColor,
+    };
   };
 
   // 渲染正交投影后的 Voxel 几何面数据
@@ -377,7 +407,7 @@ export function ActivityHeatmap3D({
     const W = weeks.length;
 
     return cells.map((c) => {
-      const targetH = levelToHeight(c.level);
+      const { height: targetH, baseColor } = getCellHeightAndColor(c);
       // 水波波浪渐变生长：基于距离图表中心的距离产生延迟
       const distFromCenter = Math.sqrt(Math.pow(c.col - W / 2, 2) + Math.pow(c.row - 3.5, 2));
       const maxDist = Math.sqrt(Math.pow(W / 2, 2) + Math.pow(3.5, 2));
@@ -419,8 +449,6 @@ export function ActivityHeatmap3D({
         { name: "back", indices: [2, 3, 7, 6], scale: 0.65, normal: [0, 1, 0] },
       ];
 
-      const baseColor = colors[Math.min(4, Math.max(0, Number(c.level) || 0))];
-
       // 6. 相机空间内的背向消隐 (Back-face Culling) 与光影 (Shading)
       const renderedFaces = [];
       const lx = 0.35, ly = -0.4, lz = 0.83; // 虚拟光源位置（右上前方）
@@ -455,11 +483,13 @@ export function ActivityHeatmap3D({
 
       return {
         ...c,
+        height: targetH,
+        baseColor,
         centerProj,
         renderedFaces,
       };
     });
-  }, [cells, angle, colors, weeks.length, growthWave, UNIT_SIZE, SIZE, HEIGHT_MAX]);
+  }, [cells, angle, colors, weeks.length, growthWave, UNIT_SIZE, SIZE, HEIGHT_MAX, absoluteMaxValue, isDark, selectedTheme]);
 
   // 8. 画家算法 (Painter's Algorithm)：由远及近（深度升序）排序渲染
   const sortedCells = useMemo(() => {
@@ -588,7 +618,7 @@ export function ActivityHeatmap3D({
                   const projPoint = rotatePoint(
                     (c.col - weeks.length / 2) * UNIT_SIZE,
                     (c.row - 3.5) * UNIT_SIZE,
-                    levelToHeight(c.level),
+                    c.height || 1.8,
                     angle.yaw,
                     angle.pitch
                   );

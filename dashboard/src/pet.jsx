@@ -760,7 +760,7 @@ function Pet() {
     } else if (autoState === "happy") {
       autoState = "mini-happy";
     } else {
-      autoState = hovering ? "mini-peek" : "mini-idle";
+      autoState = hovering ? "mini-crabwalk" : "mini-idle";
     }
   }
 
