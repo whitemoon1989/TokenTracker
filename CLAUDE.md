@@ -18,8 +18,10 @@ For the canonical list of supported providers, grep `parse*Incremental` in `src/
 ## Frequently used commands
 
 ```bash
-npm test                                  # node --test test/*.test.js  (97 files)
-node --test test/<name>.test.js           # single test file
+npm test                                  # node --test test/*.test.js  (200+ test files)
+node --test test/<name>.test.js           # single test file (fast, ms range)
+node --test --test-name-pattern="Trae" test/*.test.js  # run tests matching pattern
+node --test --test-concurrency=8 test/*.test.js        # run tests in parallel across cores
 npm run ci:local                          # tests + validations + builds
 npm run dashboard:dev                     # Vite dev server with local API mock (port 5173)
 npm run dashboard:build                   # build to dashboard/dist/
@@ -35,6 +37,7 @@ node bin/tracker.js serve --no-sync       # local dashboard server on :7680
 
 | Need to... | Look here |
 |---|---|
+| Build / Release Windows client | `docs/BUILDING.md` — ALWAYS inspect `docs/BUILDING.md` before performing Windows client builds (requires `TOKENTRACKER_BUILD_PET=1`) |
 | Add / modify a provider parser | `src/lib/rollout.js` — search `parse*Incremental` |
 | Install / uninstall a provider hook | `src/lib/<provider>-hook.js` + register in `src/commands/init.js` + `uninstall.js` |
 | Add a local API endpoint | `src/lib/local-api.js` — search `/functions/tokentracker-` |

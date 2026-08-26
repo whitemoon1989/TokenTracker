@@ -7008,6 +7008,35 @@ async function parseCodebuddyIncremental({
           continue;
         }
 
+        // 解析 ConversationManager addMessages 行，提取 traceId→modelId 映射。
+        // 这些行在每次 LLM 调用后都会写入，即使 "Model prepared:" 因日志轮换出现在
+        // 不同的文件里，也能通过 traceId（即 agentId）找到正确的模型名，避免
+        // 跨文件 agentId 匹配失败时回落到 codebuddy-unknown。
+        if (line.includes("[ConversationManager]") && line.includes("addMessages update:") && line.includes("traceId")) {
+          const extraMarker = "extra=";
+          const extraIdx = line.indexOf(extraMarker);
+          if (extraIdx !== -1) {
+            const extraRaw = line.slice(extraIdx + extraMarker.length);
+            const braceStart = extraRaw.indexOf("{");
+            if (braceStart !== -1) {
+              const braceEnd = extraRaw.lastIndexOf("}");
+              if (braceEnd !== -1 && braceEnd >= braceStart) {
+                try {
+                  const extra = JSON.parse(extraRaw.slice(braceStart, braceEnd + 1));
+                  const traceId = typeof extra.traceId === "string" && extra.traceId.trim() ? extra.traceId.trim() : null;
+                  const modelId = typeof extra.modelId === "string" && extra.modelId.trim() ? extra.modelId.trim() : null;
+                  if (traceId && modelId) {
+                    // 仅在尚未记录时写入，优先保留 Model prepared 已识别的值
+                    if (!modelsByAgent.has(traceId)) modelsByAgent.set(traceId, modelId);
+                    if (!logModelsByAgent[agentModelKey(traceId)]) logModelsByAgent[agentModelKey(traceId)] = modelId;
+                  }
+                } catch (_e) { /* JSON 格式异常，跳过 */ }
+              }
+            }
+          }
+          continue;
+        }
+
         if (!line.includes("[AgentReporter]") || !line.includes("Agent execution successful with usage:")) {
           continue;
         }
@@ -7580,7 +7609,9 @@ async function parseWorkbuddyIncremental({
         su.used,
         su.updated_at,
         s.model,
-        s.cwd
+        s.cwd,
+        s.created_at AS session_created_at,
+        s.updated_at AS session_updated_at
       FROM session_usage su
       LEFT JOIN sessions s ON s.id = su.session_id
       WHERE su.used IS NOT NULL
@@ -7609,6 +7640,8 @@ async function parseWorkbuddyIncremental({
 
         const usedNow = toNonNegativeInt(row.used);
         const updatedAtRaw = toNonNegativeInt(row.updated_at);
+        const sessionCreatedAt = toNonNegativeInt(row.session_created_at);
+        const sessionUpdatedAt = toNonNegativeInt(row.session_updated_at);
         const rawModel = typeof row.model === "string" ? row.model.trim() : "";
 
         if (usedNow <= 0 || updatedAtRaw <= 0) continue;
@@ -7635,7 +7668,12 @@ async function parseWorkbuddyIncremental({
         const cacheCreation = 0;
         const reasoningTokens = 0;
 
-        const tsMs = updatedAtRaw > 10000000000 ? updatedAtRaw : updatedAtRaw * 1000;
+        // For initial parse of a session (prevUsed === 0), prioritize session's own timestamp
+        // (session_updated_at or session_created_at) if valid, so background DB maintenance
+        // touching su.updated_at on old sessions won't misattribute historical tokens to current wall-clock time.
+        const sessionTs = sessionUpdatedAt > 0 ? sessionUpdatedAt : sessionCreatedAt;
+        const effectiveTs = (prevUsed === 0 && sessionTs > 0) ? sessionTs : updatedAtRaw;
+        const tsMs = effectiveTs > 10000000000 ? effectiveTs : effectiveTs * 1000;
         const tsIso = new Date(tsMs).toISOString();
         const bucketStart = toUtcHalfHourStart(tsIso);
         if (!bucketStart) continue;
@@ -7928,6 +7966,13 @@ function resolveKilocodeRoots(env = process.env) {
       path.join(base, "VSCodium"),
       path.join(base, "Trae"),
       path.join(base, "Trae CN"),
+      path.join(base, "TRAE SOLO CN"),
+      path.join(base, "Trae Solo CN"),
+      path.join(base, "Trae Work CN"),
+      path.join(base, "TRAE Work CN"),
+      path.join(base, "TRAE WORK CN"),
+      path.join(base, "Trae Work"),
+      path.join(base, "TRAE WORK"),
     );
   } else if (process.platform === "win32") {
     const appData = env.APPDATA || path.join(home, "AppData", "Roaming");
@@ -7940,10 +7985,20 @@ function resolveKilocodeRoots(env = process.env) {
       path.join(appData, "VSCodium"),
       path.join(appData, "Trae"),
       path.join(appData, "Trae CN"),
+      path.join(appData, "TRAE SOLO CN"),
+      path.join(appData, "Trae Solo CN"),
+      path.join(appData, "Trae Work CN"),
+      path.join(appData, "TRAE Work CN"),
+      path.join(appData, "TRAE WORK CN"),
+      path.join(appData, "Trae Work"),
+      path.join(appData, "TRAE WORK"),
     ];
     const wslRoots = [];
     if (wsl.shouldProbeWsl(env)) {
-      for (const ide of ["Code", "Code - Insiders", "Cursor", "CodeBuddy", "Windsurf", "VSCodium", "Trae", "Trae CN"]) {
+      for (const ide of [
+        "Code", "Code - Insiders", "Cursor", "CodeBuddy", "Windsurf", "VSCodium",
+        "Trae", "Trae CN", "TRAE SOLO CN", "Trae Solo CN", "Trae Work CN", "TRAE Work CN", "TRAE WORK CN", "Trae Work", "TRAE WORK"
+      ]) {
         const wslDir = wsl.discoverWslHome(`.config/${ide}`, { env });
         if (wslDir) wslRoots.push(wslDir);
       }
@@ -7966,6 +8021,13 @@ function resolveKilocodeRoots(env = process.env) {
       path.join(xdg, "VSCodium"),
       path.join(xdg, "Trae"),
       path.join(xdg, "Trae CN"),
+      path.join(xdg, "TRAE SOLO CN"),
+      path.join(xdg, "Trae Solo CN"),
+      path.join(xdg, "Trae Work CN"),
+      path.join(xdg, "TRAE Work CN"),
+      path.join(xdg, "TRAE WORK CN"),
+      path.join(xdg, "Trae Work"),
+      path.join(xdg, "TRAE WORK"),
     );
   }
   return candidates;

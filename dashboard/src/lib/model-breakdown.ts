@@ -176,9 +176,8 @@ export function buildModelGroupedFleetData(modelBreakdown: any, { copyFn }: AnyR
         usage: item.totalTokens,
         cacheHitRate,
         cacheReusedTokens: item.rawCacheRead,
-        cacheInputTokens,
-        models: modelSources,
         sourceCount: item.sourcesMap.size,
+        models: modelSources,
       };
     });
 }
@@ -293,6 +292,7 @@ export function buildFleetData(modelBreakdown: any, { copyFn, groupBy = "provide
         cacheHitRate,
         cacheReusedTokens: entry.cacheRead,
         cacheInputTokens,
+        sourceCount: models.length,
         models,
       };
     });

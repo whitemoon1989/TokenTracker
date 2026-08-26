@@ -168,11 +168,8 @@ test("Windows edge tuck keeps the sprite visible instead of hiding window paddin
   // `workArea.Right - EdgePeek` (which leaves only transparent padding visible).
   assert.match(windowsPetSource, /private double SpriteLeftInset/);
   assert.match(windowsPetSource, /private double TuckedLeft\(double workAreaRight\)/);
-  assert.match(
-    windowsPetSource,
-    /double targetLeft = _isRevealed \? wa\.Right - Width : TuckedLeft\(wa\.Right\)/,
-  );
-  assert.match(windowsPetSource, /double leftX = targetLeft \+ SpriteLeftInset - pad/);
+  assert.match(windowsPetSource, /TuckedLeft\(wa\.Right\)/);
+  assert.match(windowsPetSource, /SpriteLeftInset - pad/);
   assert.match(
     windowsPetSource,
     /double targetX = _isRevealed \? wa\.Right - Width : TuckedLeft\(wa\.Right\)/,

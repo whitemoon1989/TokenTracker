@@ -7,6 +7,7 @@ const {
   getTraeCacheDir, 
   getTraeTokenAndHost,
   resolveTraeCnPaths,
+  resolveTraeCnPathsList,
   resolveTraeCnDbKey,
   verifyTraeDbKey,
   decryptTraeDb
@@ -238,10 +239,23 @@ async function syncTraeCnLocal() {
   const decryptedTempPath = path.join(cacheDir, "database_decrypted.db");
 
   try {
-    const paths = resolveTraeCnPaths();
-    const dbPath = paths.dbPath;
-    if (!fssync.existsSync(dbPath)) {
-      return 0; // Trae CN is not installed
+    const candidateList = resolveTraeCnPathsList();
+    const seenPaths = new Set();
+    const existingCandidates = [];
+    for (const c of candidateList) {
+      if (!fssync.existsSync(c.dbPath)) continue;
+      let real = c.dbPath;
+      try {
+        real = fssync.realpathSync(c.dbPath);
+      } catch (_e) {}
+      const key = process.platform === "win32" ? real.toLowerCase() : real;
+      if (!seenPaths.has(key)) {
+        seenPaths.add(key);
+        existingCandidates.push(c);
+      }
+    }
+    if (existingCandidates.length === 0) {
+      return 0; // No Trae CN databases found
     }
 
     const encKey = await resolveTraeCnDbKey();
@@ -250,168 +264,184 @@ async function syncTraeCnLocal() {
       return 0;
     }
 
-    if (!verifyTraeDbKey(dbPath, encKey)) {
-      process.stderr.write("  [tokentracker] Trae CN 本地数据库 HMAC 校验失败，可能是密钥已失效或配置不正确。\n");
-      return 0;
-    }
-
-    // Decrypt database to temporary path
-    try {
-      decryptTraeDb(dbPath, decryptedTempPath, encKey);
-    } catch (err) {
-      process.stderr.write(`  [tokentracker] 解密 Trae CN 本地数据库失败: ${err.message}\n`);
-      return 0;
-    }
-
-    // Load manifest
     const manifest = await loadManifest(cacheDir);
-    const lastTurnId = manifest.last_turn_id || 0;
-
-    // Load turns
-    let turns = [];
-    try {
-      turns = readSqliteJsonRows(
-        decryptedTempPath,
-        `SELECT id, session_id, context, created_at FROM chat_turn WHERE id > ${lastTurnId} AND context IS NOT NULL`
-      );
-    } catch (_err) {
-      try {
-        turns = readSqliteJsonRows(
-          decryptedTempPath,
-          `SELECT t.id, t.session_id, t.context, s.created_at FROM chat_turn t LEFT JOIN chat_session s ON t.session_id = s.id WHERE t.id > ${lastTurnId} AND t.context IS NOT NULL`
-        );
-      } catch (_e) {
-        turns = readSqliteJsonRows(
-          decryptedTempPath,
-          `SELECT id, session_id, context FROM chat_turn WHERE id > ${lastTurnId} AND context IS NOT NULL`
-        );
-      }
+    const lastTurnIds = { ...(manifest.last_turn_ids || {}) };
+    if (lastTurnIds["Trae CN"] === undefined && manifest.last_turn_id) {
+      lastTurnIds["Trae CN"] = manifest.last_turn_id;
     }
 
-    if (turns.length === 0) {
-      return 0;
-    }
+    const totalConvertedSessions = [];
+    const now = Math.floor(Date.now() / 1000);
 
-    // Map turns to sessions format
-    const sessionsMap = new Map();
-    let maxTurnId = lastTurnId;
-
-    for (const t of turns) {
-      if (t.id > maxTurnId) {
-        maxTurnId = t.id;
-      }
-      const sessionId = t.session_id;
-      if (!sessionId) continue;
-
-      let ctx;
-      try {
-        ctx = JSON.parse(t.context);
-      } catch (_e) {
+    for (const c of existingCandidates) {
+      if (!verifyTraeDbKey(c.dbPath, encKey)) {
+        process.stderr.write(`  [tokentracker] Trae CN (${c.dirName}) 本地数据库 HMAC 校验失败，可能是密钥已失效或配置不正确。\n`);
         continue;
       }
 
-      const tu = ctx.token_usage || {};
-      if (!tu || (!tu.total_tokens && !tu.prompt_tokens)) continue;
-
-      let modelName = "unknown";
-      if (ctx.persist_user_message_context && ctx.persist_user_message_context.model_info) {
-        modelName = ctx.persist_user_message_context.model_info.config_name || "unknown";
+      // Decrypt database to temporary path
+      try {
+        decryptTraeDb(c.dbPath, decryptedTempPath, encKey);
+      } catch (err) {
+        process.stderr.write(`  [tokentracker] 解密 Trae CN (${c.dirName}) 本地数据库失败: ${err.message}\n`);
+        continue;
       }
 
-      let createdAtVal = t.created_at;
-      let createdAtMs = Date.now();
-      if (createdAtVal !== undefined && createdAtVal !== null) {
-        const valNum = Number(createdAtVal);
-        if (!isNaN(valNum)) {
-          createdAtMs = valNum > 10000000000 ? valNum : valNum * 1000;
-        } else {
-          const parsed = Date.parse(createdAtVal);
-          if (!isNaN(parsed)) {
-            createdAtMs = parsed;
+      const lastTurnId = lastTurnIds[c.dirName] || 0;
+
+      // Load turns
+      let turns = [];
+      try {
+        turns = readSqliteJsonRows(
+          decryptedTempPath,
+          `SELECT id, session_id, context, created_at FROM chat_turn WHERE id > ${lastTurnId} AND context IS NOT NULL`
+        );
+      } catch (_err) {
+        try {
+          turns = readSqliteJsonRows(
+            decryptedTempPath,
+            `SELECT t.id, t.session_id, t.context, s.created_at FROM chat_turn t LEFT JOIN chat_session s ON t.session_id = s.id WHERE t.id > ${lastTurnId} AND t.context IS NOT NULL`
+          );
+        } catch (_e) {
+          turns = readSqliteJsonRows(
+            decryptedTempPath,
+            `SELECT id, session_id, context FROM chat_turn WHERE id > ${lastTurnId} AND context IS NOT NULL`
+          );
+        }
+      }
+
+      // Clean up temp DB immediately after query
+      try {
+        if (fssync.existsSync(decryptedTempPath)) {
+          fssync.unlinkSync(decryptedTempPath);
+        }
+      } catch (_e) {}
+
+      if (turns.length === 0) {
+        lastTurnIds[c.dirName] = lastTurnId;
+        continue;
+      }
+
+      // Map turns to sessions format
+      const sessionsMap = new Map();
+      let maxTurnId = lastTurnId;
+
+      for (const t of turns) {
+        if (t.id > maxTurnId) {
+          maxTurnId = t.id;
+        }
+        const sessionId = t.session_id;
+        if (!sessionId) continue;
+
+        let ctx;
+        try {
+          ctx = JSON.parse(t.context);
+        } catch (_e) {
+          continue;
+        }
+
+        const tu = ctx.token_usage || {};
+        if (!tu || (!tu.total_tokens && !tu.prompt_tokens)) continue;
+
+        let modelName = "unknown";
+        if (ctx.persist_user_message_context && ctx.persist_user_message_context.model_info) {
+          modelName = ctx.persist_user_message_context.model_info.config_name || "unknown";
+        }
+
+        let createdAtVal = t.created_at;
+        let createdAtMs = Date.now();
+        if (createdAtVal !== undefined && createdAtVal !== null) {
+          const valNum = Number(createdAtVal);
+          if (!isNaN(valNum)) {
+            createdAtMs = valNum > 10000000000 ? valNum : valNum * 1000;
+          } else {
+            const parsed = Date.parse(createdAtVal);
+            if (!isNaN(parsed)) {
+              createdAtMs = parsed;
+            }
           }
         }
+
+        const useTime = Math.floor(createdAtMs / 1000);
+
+        const detail = {
+          prompt_tokens: tu.prompt_tokens || 0,
+          completion_tokens: tu.completion_tokens || 0,
+          total_tokens: tu.total_tokens || 0,
+          cache_read_input_tokens: tu.cache_read_input_tokens || 0,
+          cache_creation_input_tokens: tu.cache_creation_input_tokens || 0,
+          use_time: useTime,
+        };
+
+        if (!sessionsMap.has(sessionId)) {
+          sessionsMap.set(sessionId, new Map());
+        }
+        const modelMap = sessionsMap.get(sessionId);
+        if (!modelMap.has(modelName)) {
+          modelMap.set(modelName, []);
+        }
+        modelMap.get(modelName).push(detail);
       }
 
-      const useTime = Math.floor(createdAtMs / 1000);
+      for (const [sessionId, modelMap] of sessionsMap.entries()) {
+        const modelsArr = [];
+        let maxUseTime = 0;
+        let totalPrompt = 0, totalCompletion = 0, totalCacheRead = 0, totalCacheCreation = 0;
+        let bestModel = "unknown";
+        let maxModelTokens = -1;
 
-      const detail = {
-        prompt_tokens: tu.prompt_tokens || 0,
-        completion_tokens: tu.completion_tokens || 0,
-        total_tokens: tu.total_tokens || 0,
-        cache_read_input_tokens: tu.cache_read_input_tokens || 0,
-        cache_creation_input_tokens: tu.cache_creation_input_tokens || 0,
-        use_time: useTime,
-      };
-
-      if (!sessionsMap.has(sessionId)) {
-        sessionsMap.set(sessionId, new Map());
-      }
-      const modelMap = sessionsMap.get(sessionId);
-      if (!modelMap.has(modelName)) {
-        modelMap.set(modelName, []);
-      }
-      modelMap.get(modelName).push(detail);
-    }
-
-    const convertedSessions = [];
-    const now = Math.floor(Date.now() / 1000);
-
-    for (const [sessionId, modelMap] of sessionsMap.entries()) {
-      const modelsArr = [];
-      let maxUseTime = 0;
-      let totalPrompt = 0, totalCompletion = 0, totalCacheRead = 0, totalCacheCreation = 0;
-      let bestModel = "unknown";
-      let maxModelTokens = -1;
-
-      for (const [modelName, details] of modelMap.entries()) {
-        let sumPrompt = 0, sumCompletion = 0, sumTotal = 0, sumCacheRead = 0, sumCacheCreation = 0;
-        for (const d of details) {
-          sumPrompt += d.prompt_tokens;
-          sumCompletion += d.completion_tokens;
-          sumTotal += d.total_tokens;
-          sumCacheRead += d.cache_read_input_tokens;
-          sumCacheCreation += d.cache_creation_input_tokens;
-          if (d.use_time > maxUseTime) {
-            maxUseTime = d.use_time;
+        for (const [modelName, details] of modelMap.entries()) {
+          let sumPrompt = 0, sumCompletion = 0, sumTotal = 0, sumCacheRead = 0, sumCacheCreation = 0;
+          for (const d of details) {
+            sumPrompt += d.prompt_tokens;
+            sumCompletion += d.completion_tokens;
+            sumTotal += d.total_tokens;
+            sumCacheRead += d.cache_read_input_tokens;
+            sumCacheCreation += d.cache_creation_input_tokens;
+            if (d.use_time > maxUseTime) {
+              maxUseTime = d.use_time;
+            }
           }
+
+          totalPrompt += sumPrompt;
+          totalCompletion += sumCompletion;
+          totalCacheRead += sumCacheRead;
+          totalCacheCreation += sumCacheCreation;
+
+          if (sumTotal > maxModelTokens) {
+            maxModelTokens = sumTotal;
+            bestModel = modelName;
+          }
+
+          modelsArr.push({
+            model_name: modelName,
+            prompt_tokens: sumPrompt,
+            completion_tokens: sumCompletion,
+            total_tokens: sumTotal,
+            cache_read_input_tokens: sumCacheRead,
+            cache_creation_input_tokens: sumCacheCreation,
+            detail: details,
+          });
         }
 
-        totalPrompt += sumPrompt;
-        totalCompletion += sumCompletion;
-        totalCacheRead += sumCacheRead;
-        totalCacheCreation += sumCacheCreation;
-
-        if (sumTotal > maxModelTokens) {
-          maxModelTokens = sumTotal;
-          bestModel = modelName;
-        }
-
-        modelsArr.push({
-          model_name: modelName,
-          prompt_tokens: sumPrompt,
-          completion_tokens: sumCompletion,
-          total_tokens: sumTotal,
-          cache_read_input_tokens: sumCacheRead,
-          cache_creation_input_tokens: sumCacheCreation,
-          detail: details,
+        totalConvertedSessions.push({
+          session_id: sessionId,
+          usage_time: maxUseTime || now,
+          model_name: bestModel,
+          extra_info: {
+            input_token: totalPrompt,
+            output_token: totalCompletion,
+            cache_read_token: totalCacheRead,
+            cache_write_token: totalCacheCreation,
+          },
+          user_usage_group_by_models: modelsArr,
         });
       }
 
-      convertedSessions.push({
-        session_id: sessionId,
-        usage_time: maxUseTime || now,
-        model_name: bestModel,
-        extra_info: {
-          input_token: totalPrompt,
-          output_token: totalCompletion,
-          cache_read_token: totalCacheRead,
-          cache_write_token: totalCacheCreation,
-        },
-        user_usage_group_by_models: modelsArr,
-      });
+      lastTurnIds[c.dirName] = maxTurnId;
     }
 
-    if (convertedSessions.length === 0) {
+    if (totalConvertedSessions.length === 0) {
       return 0;
     }
 
@@ -426,7 +456,7 @@ async function syncTraeCnLocal() {
     const artifactPath = path.join(sessionsDir, artifactFilename);
 
     const incomingSessions = [];
-    for (const s of convertedSessions) {
+    for (const s of totalConvertedSessions) {
       incomingSessions.push({
         session_id: s.session_id,
         usage_time: s.usage_time,
@@ -434,16 +464,19 @@ async function syncTraeCnLocal() {
       });
     }
 
+    const maxTurnIdAll = Math.max(0, ...Object.values(lastTurnIds));
+
     const nextManifest = {
       version: MANIFEST_VERSION,
       last_synced_at: now,
-      last_turn_id: maxTurnId,
+      last_turn_id: maxTurnIdAll,
+      last_turn_ids: lastTurnIds,
       sessions: mergeManifestSessions(manifest.sessions, incomingSessions),
     };
 
     const batchWinsManifest = manifestReferencesArtifact(nextManifest.sessions, manifestSessionPath);
     if (batchWinsManifest) {
-      await writeJson(artifactPath, convertedSessions);
+      await writeJson(artifactPath, totalConvertedSessions);
     }
 
     // GC
@@ -460,7 +493,7 @@ async function syncTraeCnLocal() {
     } catch (_e) {}
 
     await saveManifest(cacheDir, nextManifest);
-    return convertedSessions.length;
+    return totalConvertedSessions.length;
   } finally {
     // Secure delete temporary decrypted database
     try {

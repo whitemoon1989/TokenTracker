@@ -890,6 +890,11 @@ export function DashboardPage({
     refreshUsageLimits,
   ]);
 
+  const refreshUsageStatsRef = useRef(refreshUsageStats);
+  useEffect(() => {
+    refreshUsageStatsRef.current = refreshUsageStats;
+  }, [refreshUsageStats]);
+
   // The DMG starts its embedded server with --no-sync, so a page reload used
   // to fetch the same stale queue again. Refresh all local log/database sources
   // (Claude, Gemini, OpenCode, Codex, etc.) without doing cloud upload, Cursor
@@ -909,7 +914,7 @@ export function DashboardPage({
     let active = true;
     localReloadSyncPromiseRef.current
       .then(() => {
-        if (active) return refreshUsageStats();
+        if (active) return refreshUsageStatsRef.current();
         return undefined;
       })
       .catch((error) => {
@@ -918,7 +923,7 @@ export function DashboardPage({
     return () => {
       active = false;
     };
-  }, [isLocalMode, mockEnabled, accountView, refreshUsageStats]);
+  }, [isLocalMode, mockEnabled, accountView]);
 
   // Provider hooks update the queue quickly, while the native server also
   // performs a once-per-minute all-source fallback scan. Re-read the local
@@ -927,12 +932,12 @@ export function DashboardPage({
   useEffect(() => {
     if (!isLocalMode || mockEnabled || accountView) return undefined;
     const autoRefresh = startLocalUsageAutoRefresh({
-      refresh: refreshUsageStats,
+      refresh: () => refreshUsageStatsRef.current(),
       onError: (error) =>
         console.warn("[DashboardPage] Automatic usage refresh failed:", error),
     });
     return () => autoRefresh.stop();
-  }, [isLocalMode, mockEnabled, accountView, refreshUsageStats]);
+  }, [isLocalMode, mockEnabled, accountView]);
 
   const handleUsageRefresh = useCallback(async () => {
     setManualSyncLoading(true);

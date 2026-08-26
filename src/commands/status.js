@@ -70,7 +70,7 @@ const {
   probeWslDistros,
   resolveQoderPaths,
 } = require("../lib/rollout");
-const { isTraeInstalled, loadCredentials, resolveTraeCnPaths, resolveTraeCnDbKey } = require("../lib/trae-config");
+const { isTraeInstalled, loadCredentials, resolveTraeCnPaths, resolveTraeCnPathsList, resolveTraeCnDbKey } = require("../lib/trae-config");
 const wsl = require("../lib/wsl-probe");
 const { getWslMode, isInvalidWslMode, shouldProbeWsl, discoverWslHome } = wsl;
 const { resolveInstallPaths } = require("../lib/install-resolver");
@@ -310,13 +310,17 @@ async function cmdStatus(argv = []) {
   const traeDetail = traeCredsDetails.length > 0 ? traeCredsDetails.join(", ") : "no credentials";
 
   // Trae CN (local db)
-  const traeCnPaths = resolveTraeCnPaths({ home });
-  const traeCnDbExists = fssync.existsSync(traeCnPaths.dbPath);
+  const traeCnList = resolveTraeCnPathsList({ home });
+  const traeCnInstalledList = traeCnList.filter((c) => fssync.existsSync(c.dbPath));
+  const traeCnDbExists = traeCnInstalledList.length > 0;
   let traeCnKeyDetail = "no key";
   if (traeCnDbExists) {
     const traeCnKey = await resolveTraeCnDbKey({ home });
+    const foundNames = traeCnInstalledList.map((c) => c.dirName).join(", ");
     if (traeCnKey) {
-      traeCnKeyDetail = "key configured";
+      traeCnKeyDetail = `key configured (${foundNames})`;
+    } else {
+      traeCnKeyDetail = `no key (${foundNames})`;
     }
   }
 

@@ -37,7 +37,26 @@ internal static class Program
         // dispatcher context. We never call its Run(); the WinForms message pump below
         // drives the shared STA thread (and the WPF Dispatcher rides on it). Explicit
         // shutdown mode so WPF doesn't tear itself down when the window is hidden.
-        _ = new System.Windows.Application { ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown };
+        var wpfApp = new System.Windows.Application { ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown };
+
+        // 全局异常兜底:托盘常驻进程不能因单次 UI 线程异常直接崩溃退出(用户表现为
+        // "点击宠物后整个程序消失")。WebView2 runtime 进入坏状态时 Navigate /
+        // ExecuteScriptAsync 可能抛 COMException,任何遗漏 try/catch 的路径都会沿
+        // UI 线程上抛 —— 这里统一捕获、写日志、标记已处理,进程保活自愈。
+        System.Windows.Threading.DispatcherUnhandledExceptionEventHandler OnWpfUnhandled =
+            (_, e) =>
+            {
+                Diag.Log("crash", $"dispatcher unhandled: {e.Exception}");
+                e.Handled = true;
+            };
+        wpfApp.Dispatcher.UnhandledException += OnWpfUnhandled;
+        System.Threading.ThreadExceptionEventHandler OnWinFormsUnhandled =
+            (_, e) => Diag.Log("crash", $"winforms thread exception: {e.Exception}");
+        System.Windows.Forms.Application.ThreadException += OnWinFormsUnhandled;
+        System.Windows.Forms.Application.SetUnhandledExceptionMode(
+            System.Windows.Forms.UnhandledExceptionMode.CatchException);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            Diag.Log("crash", $"appdomain unhandled (terminating={e.IsTerminating}): {e.ExceptionObject}");
 
         ApplicationConfiguration.Initialize();
         // Show the desktop pet on a normal launch (manual run or post-install), but stay

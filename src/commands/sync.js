@@ -246,6 +246,7 @@ const AUTO_SYNC_SOURCES = new Set([
   "pi",
   "qoder",
   "roocode",
+  "trae",
   "workbuddy",
   "zcode",
   "zed",
@@ -1286,8 +1287,10 @@ async function cmdSync(argv, context = {}) {
           }
         }
       }
+    }
 
-      // ── Trae CN (Local DB-based) ──
+    // ── Trae CN (Local DB-based) ──
+    if (sourceAllowed("trae")) {
       try {
         if (progress?.enabled) {
           progress.start("Syncing Trae CN local database...");

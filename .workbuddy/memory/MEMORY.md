@@ -14,3 +14,10 @@
 ## 探查要点（本机环境）
 - 本机 Grok 实际模型 = grok-4.5（signals.json 实测 primaryModelId）。
 - 本机已统计：Trae CN（1232 sessions）、Grok（9 buckets：8×grok-4.5 + 1×grok-build）。那条 grok-build 非历史残留，而是 2026-07-20 16:30（北京，≈35分钟前，08:30Z）产生，与同日 grok-4.5 并存 → 间歇性实时漏读（部分 session signals 未写 primaryModelId）。
+
+## 高效测试与调试约定
+- 尽量避免跑全量 `npm test`（含 200+ 个测试文件，耗时较长）。
+- 单测试文件快速运行：`node --test test/<name>.test.js`
+- 按功能或关键词过滤：`node --test --test-name-pattern="Trae" test/*.test.js`
+- 多核并发加速运行：`node --test --test-concurrency=8 test/*.test.js`
+

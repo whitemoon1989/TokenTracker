@@ -849,23 +849,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var (symbol, rate) = _dashboard is not null
             ? await _dashboard.ReadCurrencyAsync()
             : Currency.ReadPersisted() ?? ("$", 1m);
-        // Push currency + language to the pet even before the first usage poll lands, so
-        // a freshly launched pet never sits in default USD/English until polling finishes
-        // (connection state is owned by OnServerStatusChanged).
-        _petWindow?.ApplyCurrency(symbol, rate);
-        _petWindow?.ApplyLocale(NativeLocalization.ResolveLocale(_localePreference));
-        _petWindow?.ApplyLimits(_lastLimitsJson);
+        var locale = NativeLocalization.ResolveLocale(_localePreference);
+        var connected = _server.Status == ServerManager.ServerStatus.Running;
+        var stats = _lastStats ?? default;
+
+        _petWindow?.ApplySnapshot(symbol, rate, locale, _lastLimitsJson, stats, connected);
 
         if (_lastStats is not { } s)
         {
-            _petWindow?.ApplyStats(default);
             _summaryItem.Text = $"{_strings.TodayTitle}: {_strings.NoData}";
             return;
         }
 
-        // Feed the floating pet the SAME numbers the tray shows (same poller, same moment).
-        _petWindow?.ApplyStats(s);
-        _petWindow?.ApplyConnected(_server.Status == ServerManager.ServerStatus.Running);
         var cost = symbol + (s.TodayCostUsd * rate).ToString("0.00", CultureInfo.InvariantCulture);
         var text = s.TodayTokens <= 0
             ? $"{_strings.TodayTitle}: {_strings.NoData}"

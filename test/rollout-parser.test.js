@@ -7024,6 +7024,41 @@ test("parseWorkbuddyIncremental SQLite fallback emits cumulative deltas, not ful
   }
 });
 
+test("parseWorkbuddyIncremental uses sessions.created_at/updated_at when initial parse sees modern su.updated_at on historical session", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-sqlite-historical-"));
+  try {
+    const dbPath = path.join(tmp, "workbuddy.db");
+    const historicalTs = 1773797289450; // March 2026
+    const modernTs = 1784862552198;     // July 2026
+    sqliteCli.execFileSync("sqlite3", [
+      dbPath,
+      [
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, model TEXT, created_at INTEGER, updated_at INTEGER);",
+        "CREATE TABLE session_usage (session_id TEXT PRIMARY KEY, used INTEGER, size INTEGER, updated_at INTEGER, credit_json TEXT);",
+        `INSERT INTO sessions VALUES ('s-hist','/tmp/project','auto', ${historicalTs}, ${historicalTs});`,
+        `INSERT INTO session_usage VALUES ('s-hist',500000,0,${modernTs},'{}');`,
+      ].join(" "),
+    ]);
+
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1 };
+    await parseWorkbuddyIncremental({
+      projectFiles: [],
+      cursors,
+      queuePath,
+      env: { WORKBUDDY_HOME: tmp, HOME: tmp },
+    });
+
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].input_tokens, 500000);
+    // Should be bucketed to March 2026 (historicalTs), NOT July 2026 (modernTs)
+    assert.ok(queued[0].hour_start.startsWith("2026-03-18"));
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("parseWorkbuddyIncremental uses SQLite fallback when JSONL files are empty", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-sqlite-empty-jsonl-"));
   try {

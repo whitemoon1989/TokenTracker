@@ -612,8 +612,14 @@ function Pet() {
   }, []);
   useEffect(() => {
     const update = () => {
-      setCharacter(readPetCharacter());
-      refreshPetCatalog();
+      const nextChar = readPetCharacter();
+      setCharacter((prev) => {
+        if (prev !== nextChar) {
+          refreshPetCatalog();
+          return nextChar;
+        }
+        return prev;
+      });
     };
     update();
     window.addEventListener("pet:character", update);

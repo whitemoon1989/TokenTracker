@@ -58,6 +58,7 @@ internal sealed class PetWindow : Window
     private string _locale = "en";
     private bool _syncing;
     private JsonNode? _limits;
+    private string? _rawLimitsJson;
     private string _character = CurrentCharacter;
     private UsagePoller.UsageStats _stats;
     private bool _connected = true;
@@ -70,6 +71,14 @@ internal sealed class PetWindow : Window
     private System.Diagnostics.Stopwatch? _animStopwatch;
     private double _animStartX;
     private double _animTargetX;
+
+    // 挂起保护:未完成的 ExecuteScriptAsync 计数上限。页面无响应期间新调用直接丢弃,
+    // 防止 24h 级别的 fire-and-forget 堆积撑爆 IPC 通道和托管堆。
+    private int _inFlightScripts;
+    private const int MaxInFlightScripts = 64;
+
+    // 长时运行自愈:定期重载宠物页面,释放页面 JS 堆 / GPU 合成内存的缓慢累积。
+    private readonly System.Windows.Threading.DispatcherTimer _healthReloadTimer;
 
     // Snapping / Mini mode states
     private bool _miniMode;
@@ -168,8 +177,52 @@ internal sealed class PetWindow : Window
             }
         };
 
-        Loaded += async (_, _) => await InitializeWebViewAsync();
+        // 周期性整页重载(NavigationCompleted 会重推全部上下文,状态无丢失),
+        // 打断长时运行下页面堆 / 合成纹理的缓慢增长。
+        _healthReloadTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromHours(6),
+        };
+        _healthReloadTimer.Tick += (_, _) =>
+        {
+            _healthReloadTimer.Stop();
+            if (!_exiting && IsVisible && _coreReady)
+            {
+                Diag.Log("pet-window", "health reload: periodic page refresh");
+                NavigateWhenServerReady();
+            }
+            _healthReloadTimer.Start();
+        };
+
+        // 睡眠/唤醒后 Chromium 渲染进程可能挂起且不自动恢复(表现为宠物画面冻结),
+        // 主动重载页面自愈。SystemEvents 是静态事件,必须在 OnClosing 里退订防泄漏。
+        // (完全限定:using Microsoft.Win32 在该 WinRT 投影 TFM 下会遮蔽 System.Text.Json)
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+
+        Loaded += async (_, _) =>
+        {
+            try { await InitializeWebViewAsync(); }
+            catch (Exception ex) { Diag.Log("pet-window", $"InitializeWebViewAsync failed: {ex}"); }
+        };
         _server.StatusChanged += OnServerStatusChanged;
+    }
+
+    /// <summary>系统电源事件处理:唤醒(Resume)后重载宠物页面,恢复可能被挂起的渲染进程。</summary>
+    private void OnPowerModeChanged(object sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (e.Mode != Microsoft.Win32.PowerModes.Resume) return;
+        try
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (!_exiting && IsVisible && _coreReady)
+                {
+                    Diag.Log("pet-window", "health reload: system resume");
+                    NavigateWhenServerReady();
+                }
+            }));
+        }
+        catch { /* window is closing */ }
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -257,9 +310,20 @@ internal sealed class PetWindow : Window
         // Only alpha 0 (transparent) or 255 are supported.
         Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "0");
 
-        var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder, null);
+        // 与 DashboardWindow 保持一致:禁用 Chromium 对被遮挡/后台窗口的定时器节流与
+        // 渲染进程后台化。宠物是悬浮窗,被全屏应用遮挡或系统睡眠/唤醒后,渲染进程
+        // 会被挂起且恢复不总是成功 —— 表现就是宠物画面冻结(24h 卡死的直接诱因)。
+        var options = new CoreWebView2EnvironmentOptions
+        {
+            AdditionalBrowserArguments =
+                "--disable-background-timer-throttling " +
+                "--disable-renderer-backgrounding " +
+                "--disable-backgrounding-occluded-windows",
+        };
+        var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder, options);
         await _webView.EnsureCoreWebView2Async(env);
         _coreReady = true;
+        _healthReloadTimer.Start();
 
         _webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(0, 0, 0, 0);
 
@@ -267,6 +331,21 @@ internal sealed class PetWindow : Window
         core.Settings.AreDefaultContextMenusEnabled = false;
         core.Settings.IsStatusBarEnabled = false;
         core.Settings.AreDevToolsEnabled = false;
+
+        core.ProcessFailed += (_, args) =>
+        {
+            Diag.Log("pet-window", $"WebView2 ProcessFailed: kind={args.ProcessFailedKind} reason={args.Reason} exitCode={args.ExitCode}");
+            if (args.ProcessFailedKind is CoreWebView2ProcessFailedKind.RenderProcessExited
+                or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive
+                or CoreWebView2ProcessFailedKind.GpuProcessExited)
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (_exiting) return;
+                    NavigateWhenServerReady();
+                }));
+            }
+        };
 
         // Keep the surface transparent even before the page's own CSS lands.
         await core.AddScriptToExecuteOnDocumentCreatedAsync(
@@ -346,14 +425,53 @@ internal sealed class PetWindow : Window
         catch { /* window is closing */ }
     }
 
+    /// <summary>
+    /// 导航到宠物页面。runtime 处于坏状态(如渲染进程刚崩溃/挂起)时 Navigate 可能抛
+    /// COMException —— 捕获并记日志,等下一次 ProcessFailed / 健康重载再重试,
+    /// 避免异常沿 UI 线程上抛导致整个托盘进程崩溃退出。
+    /// </summary>
     private void NavigateWhenServerReady()
     {
         if (!_coreReady || _server.Status != ServerManager.ServerStatus.Running) return;
         var url = $"{_server.BaseUrl}/pet.html?app=1&v={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
-        _webView.CoreWebView2.Navigate(url);
+        try
+        {
+            _webView.CoreWebView2.Navigate(url);
+        }
+        catch (Exception ex)
+        {
+            Diag.Log("pet-window", $"Navigate failed (will retry on next health reload): {ex.Message}");
+        }
     }
 
     // ── Public API ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 统一的 ExecuteScriptAsync 发射口。三重防护:
+    /// 1) 捕获 runtime 坏状态抛出的 COMException / ObjectDisposedException(旧代码里
+    ///    多处 fire-and-forget 调用点没有 try/catch,异常会沿 UI 线程上抛崩掉进程);
+    /// 2) in-flight 计数上限:页面挂起时调用永不完成,超过上限直接丢弃,防止
+    ///    150ms 级高频推送(look 方向 / typing / hover)在数小时内堆出几十万条
+    ///    pending Task 撑爆 IPC 通道与托管堆;
+    /// 3) 完成时递减计数(无论成败),ContinueWith 在线程池上执行,不碰 UI。
+    /// 丢弃是安全的:页面重载后 NavigationCompleted → PushContext 会全量重推状态。
+    /// </summary>
+    private void RunScript(string script)
+    {
+        if (!_coreReady) return;
+        if (Volatile.Read(ref _inFlightScripts) >= MaxInFlightScripts) return;
+        try
+        {
+            Interlocked.Increment(ref _inFlightScripts);
+            _ = _webView.CoreWebView2.ExecuteScriptAsync(script).ContinueWith(
+                _ => Interlocked.Decrement(ref _inFlightScripts),
+                System.Threading.Tasks.TaskScheduler.Default);
+        }
+        catch
+        {
+            Interlocked.Decrement(ref _inFlightScripts);
+        }
+    }
 
     public void ShowPet()
     {
@@ -387,6 +505,7 @@ internal sealed class PetWindow : Window
 
         // Global mouse movement & sleep/wake sequence
         long now = Environment.TickCount64;
+        if (_lastMouseActiveTime == 0) _lastMouseActiveTime = now;
         bool moved = p.X != _lastMousePos.X || p.Y != _lastMousePos.Y;
         if (moved)
         {
@@ -395,8 +514,7 @@ internal sealed class PetWindow : Window
             if (_mouseIdle)
             {
                 _mouseIdle = false;
-                _ = _webView.CoreWebView2.ExecuteScriptAsync(
-                    "window.dispatchEvent(new CustomEvent('pet:wake'));");
+                RunScript("window.dispatchEvent(new CustomEvent('pet:wake'));");
             }
         }
         else
@@ -405,8 +523,7 @@ internal sealed class PetWindow : Window
             if (!_mouseIdle && idleDuration >= 60000)
             {
                 _mouseIdle = true;
-                _ = _webView.CoreWebView2.ExecuteScriptAsync(
-                    "window.dispatchEvent(new CustomEvent('pet:sleep', { detail: { phase: 'sleeping' } }));");
+                RunScript("window.dispatchEvent(new CustomEvent('pet:sleep', { detail: { phase: 'sleeping' } }));");
             }
         }
 
@@ -458,7 +575,7 @@ internal sealed class PetWindow : Window
             if (direction != _lastLookDirection)
             {
                 _lastLookDirection = direction;
-                _ = _webView.CoreWebView2.ExecuteScriptAsync(
+                RunScript(
                     $"window.__ttPetLookDirectionIndex={direction};" +
                     "window.dispatchEvent(new Event('pet:look'));"
                 );
@@ -537,13 +654,9 @@ internal sealed class PetWindow : Window
     private void PushHover(bool hovering)
     {
         if (!_coreReady) return;
-        try
-        {
-            _ = _webView.CoreWebView2.ExecuteScriptAsync(
-                $"window.__ttPetHover={(hovering ? "true" : "false")};" +
-                "window.dispatchEvent(new Event('pet:hover'));");
-        }
-        catch { /* page mid-navigation */ }
+        RunScript(
+            $"window.__ttPetHover={(hovering ? "true" : "false")};" +
+            "window.dispatchEvent(new Event('pet:hover'));");
     }
 
     private void ApplyBubbleBand(double requestedHeight)
@@ -576,14 +689,10 @@ internal sealed class PetWindow : Window
     private void PushBubbleBand()
     {
         if (!_coreReady) return;
-        try
-        {
-            var value = _bubbleBand.ToString(CultureInfo.InvariantCulture);
-            _ = _webView.CoreWebView2.ExecuteScriptAsync(
-                $"window.__ttPetBubbleBand={value};" +
-                "window.dispatchEvent(new Event('pet:bubble-band'));");
-        }
-        catch { /* page mid-navigation */ }
+        var value = _bubbleBand.ToString(CultureInfo.InvariantCulture);
+        RunScript(
+            $"window.__ttPetBubbleBand={value};" +
+            "window.dispatchEvent(new Event('pet:bubble-band'));");
     }
 
     private void UpdateDragDirectionFromWindowMove()
@@ -598,15 +707,11 @@ internal sealed class PetWindow : Window
     private void PushDragState(string? state)
     {
         if (!_coreReady) return;
-        try
-        {
-            var value = System.Text.Json.JsonSerializer.Serialize(state);
-            _ = _webView.CoreWebView2.ExecuteScriptAsync(
-                $"window.__ttPetDragState={value};" +
-                "window.dispatchEvent(new Event('pet:drag-state'));" +
-                (state is null ? "window.dispatchEvent(new Event('pet:drag-end'));" : ""));
-        }
-        catch { /* page mid-navigation */ }
+        var value = System.Text.Json.JsonSerializer.Serialize(state);
+        RunScript(
+            $"window.__ttPetDragState={value};" +
+            "window.dispatchEvent(new Event('pet:drag-state'));" +
+            (state is null ? "window.dispatchEvent(new Event('pet:drag-end'));" : ""));
     }
 
     // ── Typing activity (global, count-only) ───────────────────────────────
@@ -662,13 +767,9 @@ internal sealed class PetWindow : Window
     private void PushState(string name, bool value)
     {
         if (!_coreReady) return;
-        try
-        {
-            _ = _webView.CoreWebView2.ExecuteScriptAsync(
-                $"window.__ttPet{name}={(value ? "true" : "false")};" +
-                $"window.dispatchEvent(new Event('pet:{name.ToLowerInvariant()}'));");
-        }
-        catch { /* page mid-navigation */ }
+        RunScript(
+            $"window.__ttPet{name}={(value ? "true" : "false")};" +
+            $"window.dispatchEvent(new Event('pet:{name.ToLowerInvariant()}'));");
     }
 
     private static bool AnyTypingKeyPressed()
@@ -695,21 +796,27 @@ internal sealed class PetWindow : Window
     /// </summary>
     public void ApplyCurrency(string symbol, decimal rate)
     {
-        _curSymbol = string.IsNullOrEmpty(symbol) ? "$" : symbol;
-        _curRate = rate > 0 ? rate : 1m;
+        var s = string.IsNullOrEmpty(symbol) ? "$" : symbol;
+        var r = rate > 0 ? rate : 1m;
+        if (_curSymbol == s && _curRate == r) return;
+        _curSymbol = s;
+        _curRate = r;
         PushContext();
     }
 
     /// <summary>Push the resolved UI locale so the pet's tap quips match the app's language.</summary>
     public void ApplyLocale(string locale)
     {
-        _locale = string.IsNullOrWhiteSpace(locale) ? "en" : locale;
+        var l = string.IsNullOrWhiteSpace(locale) ? "en" : locale;
+        if (_locale == l) return;
+        _locale = l;
         PushContext();
     }
 
     /// <summary>Push whether a sync is in progress (drives the "typing" animation, like macOS).</summary>
     public void ApplySyncing(bool syncing)
     {
+        if (_syncing == syncing) return;
         _syncing = syncing;
         PushContext();
     }
@@ -717,6 +824,8 @@ internal sealed class PetWindow : Window
     /// <summary>Push the native usage-limits snapshot without letting raw JSON become executable script.</summary>
     public void ApplyLimits(string? json)
     {
+        if (string.Equals(_rawLimitsJson, json, StringComparison.Ordinal)) return;
+        _rawLimitsJson = json;
         try
         {
             _limits = string.IsNullOrWhiteSpace(json) ? null : JsonNode.Parse(json);
@@ -738,6 +847,7 @@ internal sealed class PetWindow : Window
     /// </summary>
     public void ApplyStats(UsagePoller.UsageStats stats)
     {
+        if (_stats.Equals(stats)) return;
         var prevTokens = _stats.TodayTokens;
         var prevCost = _stats.TodayCostUsd;
         _stats = stats;
@@ -749,7 +859,7 @@ internal sealed class PetWindow : Window
             {
                 var modelName = "AI Model";
                 var costDeltaJs = costDelta.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                _ = _webView.CoreWebView2.ExecuteScriptAsync(
+                RunScript(
                     $"window.dispatchEvent(new CustomEvent('pet:model-status', {{ detail: {{ modelName: '{modelName}', tokensDelta: {tokensDelta}, costDelta: {costDeltaJs} }} }}));");
             }
         }
@@ -759,8 +869,61 @@ internal sealed class PetWindow : Window
     /// <summary>Push whether the local server is reachable (drives the disconnected animation).</summary>
     public void ApplyConnected(bool connected)
     {
+        if (_connected == connected) return;
         _connected = connected;
         PushContext();
+    }
+
+    /// <summary>
+    /// Atomically push all dashboard context states in a single batch to avoid
+    /// redundant IPC calls and event storms.
+    /// </summary>
+    public void ApplySnapshot(
+        string symbol,
+        decimal rate,
+        string locale,
+        string? limitsJson,
+        UsagePoller.UsageStats stats,
+        bool connected)
+    {
+        bool dirty = false;
+        var s = string.IsNullOrEmpty(symbol) ? "$" : symbol;
+        var r = rate > 0 ? rate : 1m;
+        if (_curSymbol != s || _curRate != r) { _curSymbol = s; _curRate = r; dirty = true; }
+
+        var l = string.IsNullOrWhiteSpace(locale) ? "en" : locale;
+        if (_locale != l) { _locale = l; dirty = true; }
+
+        if (!string.Equals(_rawLimitsJson, limitsJson, StringComparison.Ordinal))
+        {
+            _rawLimitsJson = limitsJson;
+            try { _limits = string.IsNullOrWhiteSpace(limitsJson) ? null : JsonNode.Parse(limitsJson); }
+            catch { }
+            dirty = true;
+        }
+
+        if (!_stats.Equals(stats))
+        {
+            var prevTokens = _stats.TodayTokens;
+            var prevCost = _stats.TodayCostUsd;
+            _stats = stats;
+            dirty = true;
+            if (prevTokens > 0 && stats.TodayTokens > prevTokens && _coreReady)
+            {
+                long tokensDelta = stats.TodayTokens - prevTokens;
+                decimal costDelta = stats.TodayCostUsd - prevCost;
+                var costDeltaJs = costDelta.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                RunScript(
+                    $"window.dispatchEvent(new CustomEvent('pet:model-status', {{ detail: {{ modelName: 'AI Model', tokensDelta: {tokensDelta}, costDelta: {costDeltaJs} }} }}));");
+            }
+        }
+
+        if (_connected != connected) { _connected = connected; dirty = true; }
+
+        if (dirty)
+        {
+            PushContext();
+        }
     }
 
     private void PushContext()
@@ -792,33 +955,29 @@ internal sealed class PetWindow : Window
         });
         var mini = _miniMode ? "true" : "false";
         var lookDirection = _lastLookDirection >= 0 ? _lastLookDirection.ToString() : "null";
-        try
-        {
-            _ = _webView.CoreWebView2.ExecuteScriptAsync(
-                $"window.__ttPetCurrency={{symbol:{sym},rate:{rate}}};" +
-                $"window.__ttPetLocale={loc};" +
-                $"window.__ttPetCharacter={character};" +
-                $"window.__ttPetLookDirectionIndex={lookDirection};" +
-                $"window.__ttPetSyncing={syncing};" +
-                $"window.__ttPetTokens={_stats.TodayTokens};" +
-                $"window.__ttPetCostUsd={cost};" +
-                $"window.__ttPetStats={statsJson};" +
-                $"window.__ttPetLimits={limitsJson};" +
-                $"window.__ttPetBubbleBand={bubbleBand};" +
-                $"window.__ttPetConnected={connected};" +
-                $"window.__ttPetMiniMode={mini};" +
-                "window.dispatchEvent(new Event('pet:currency'));" +
-                "window.dispatchEvent(new Event('pet:locale'));" +
-                "window.dispatchEvent(new Event('pet:character'));" +
-                "window.dispatchEvent(new Event('pet:look'));" +
-                "window.dispatchEvent(new Event('pet:syncing'));" +
-                "window.dispatchEvent(new Event('pet:usage'));" +
-                "window.dispatchEvent(new Event('pet:limits'));" +
-                "window.dispatchEvent(new Event('pet:bubble-band'));" +
-                "window.dispatchEvent(new Event('pet:connected'));" +
-                "window.dispatchEvent(new Event('pet:minimode'));");
-        }
-        catch { /* page mid-navigation */ }
+        RunScript(
+            $"window.__ttPetCurrency={{symbol:{sym},rate:{rate}}};" +
+            $"window.__ttPetLocale={loc};" +
+            $"window.__ttPetCharacter={character};" +
+            $"window.__ttPetLookDirectionIndex={lookDirection};" +
+            $"window.__ttPetSyncing={syncing};" +
+            $"window.__ttPetTokens={_stats.TodayTokens};" +
+            $"window.__ttPetCostUsd={cost};" +
+            $"window.__ttPetStats={statsJson};" +
+            $"window.__ttPetLimits={limitsJson};" +
+            $"window.__ttPetBubbleBand={bubbleBand};" +
+            $"window.__ttPetConnected={connected};" +
+            $"window.__ttPetMiniMode={mini};" +
+            "window.dispatchEvent(new Event('pet:currency'));" +
+            "window.dispatchEvent(new Event('pet:locale'));" +
+            "window.dispatchEvent(new Event('pet:character'));" +
+            "window.dispatchEvent(new Event('pet:look'));" +
+            "window.dispatchEvent(new Event('pet:syncing'));" +
+            "window.dispatchEvent(new Event('pet:usage'));" +
+            "window.dispatchEvent(new Event('pet:limits'));" +
+            "window.dispatchEvent(new Event('pet:bubble-band'));" +
+            "window.dispatchEvent(new Event('pet:connected'));" +
+            "window.dispatchEvent(new Event('pet:minimode'));");
     }
 
     /// <summary>Resize the floating pet (small / medium / large) live + persist the choice.</summary>
@@ -844,7 +1003,9 @@ internal sealed class PetWindow : Window
     /// <summary>Switch the visible companion identity and persist it.</summary>
     public void ApplyCharacter(string character)
     {
-        _character = NormalizeCharacter(character);
+        var c = NormalizeCharacter(character);
+        if (_character == c) return;
+        _character = c;
         WriteSettings(s => s["PetCharacter"] = _character);
         PushContext();
     }
@@ -884,6 +1045,9 @@ internal sealed class PetWindow : Window
         _hoverTimer.Stop();
         _clickThroughTimer.Stop();
         _revealAutoTuckTimer.Stop();
+        _healthReloadTimer.Stop();
+        // SystemEvents 是静态事件:不退订会让静态根持有本窗口实例(泄漏)。
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         _server.StatusChanged -= OnServerStatusChanged;
         base.OnClosing(e);
     }
@@ -1114,13 +1278,9 @@ internal sealed class PetWindow : Window
     private void PushMiniMode(bool value)
     {
         if (!_coreReady) return;
-        try
-        {
-            _ = _webView.CoreWebView2.ExecuteScriptAsync(
-                $"window.__ttPetMiniMode={(value ? "true" : "false")};" +
-                $"window.dispatchEvent(new Event('pet:minimode'));");
-        }
-        catch { }
+        RunScript(
+            $"window.__ttPetMiniMode={(value ? "true" : "false")};" +
+            $"window.dispatchEvent(new Event('pet:minimode'));");
     }
 
     // Duration of the tuck/reveal slide. Time-based (not step-based) so the motion is

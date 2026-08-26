@@ -399,22 +399,45 @@ async function getTraeTokenAndHost(variant) {
   return { token, host };
 }
 
-function resolveTraeCnPaths({ home = os.homedir(), platform = process.platform, env = process.env } = {}) {
+const TRAE_CN_DIR_NAMES = [
+  "Trae CN",
+  "TRAE SOLO CN",
+  "Trae Solo CN",
+  "Trae Work CN",
+  "TRAE Work CN",
+  "TRAE WORK CN",
+  "Trae Work",
+  "TRAE WORK",
+];
+
+function resolveTraeCnPathsList({ home = os.homedir(), platform = process.platform, env = process.env } = {}) {
   const pathForPlatform = platform === "win32" ? path.win32 : path.posix;
-  const dirName = "Trae CN";
-  let appDir;
+  let baseDir;
   if (platform === "darwin") {
-    appDir = pathForPlatform.join(home, "Library", "Application Support", dirName);
+    baseDir = pathForPlatform.join(home, "Library", "Application Support");
   } else if (platform === "win32") {
-    const appData = (typeof env.APPDATA === "string" && env.APPDATA.trim()) || pathForPlatform.join(home, "AppData", "Roaming");
-    appDir = pathForPlatform.join(appData, dirName);
+    baseDir = (typeof env.APPDATA === "string" && env.APPDATA.trim()) || pathForPlatform.join(home, "AppData", "Roaming");
   } else {
-    const xdg = (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()) || pathForPlatform.join(home, ".config");
-    appDir = pathForPlatform.join(xdg, dirName);
+    baseDir = (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()) || pathForPlatform.join(home, ".config");
   }
+
+  return TRAE_CN_DIR_NAMES.map((dirName) => {
+    const appDir = pathForPlatform.join(baseDir, dirName);
+    return {
+      dirName,
+      appDir,
+      dbPath: pathForPlatform.join(appDir, "ModularData", "ai-agent", "database.db"),
+    };
+  });
+}
+
+function resolveTraeCnPaths({ home = os.homedir(), platform = process.platform, env = process.env } = {}) {
+  const list = resolveTraeCnPathsList({ home, platform, env });
+  const primary = list[0];
   return {
-    appDir,
-    dbPath: pathForPlatform.join(appDir, "ModularData", "ai-agent", "database.db"),
+    appDir: primary.appDir,
+    dbPath: primary.dbPath,
+    candidates: list,
   };
 }
 
@@ -564,6 +587,7 @@ module.exports = {
   saveManualToken,
   getTraeTokenAndHost,
   resolveTraeCnPaths,
+  resolveTraeCnPathsList,
   resolveTraeCnDbKey,
   verifyTraeDbKey,
   decryptTraeDb,

@@ -7,12 +7,13 @@ const { test } = require("node:test");
 
 const {
   resolveTraeCnPaths,
+  resolveTraeCnPathsList,
   resolveTraeCnDbKey,
   verifyTraeDbKey,
   decryptTraeDb,
 } = require("../src/lib/trae-config");
 
-test("resolveTraeCnPaths returns expected path shapes for platform", () => {
+test("resolveTraeCnPaths and resolveTraeCnPathsList return expected path shapes for platform", () => {
   const paths = resolveTraeCnPaths({ home: "/my/home", platform: "darwin" });
   assert.equal(paths.appDir, "/my/home/Library/Application Support/Trae CN");
   assert.equal(paths.dbPath, "/my/home/Library/Application Support/Trae CN/ModularData/ai-agent/database.db");
@@ -20,6 +21,17 @@ test("resolveTraeCnPaths returns expected path shapes for platform", () => {
   const winPaths = resolveTraeCnPaths({ home: "C:\\Users\\test", platform: "win32", env: { APPDATA: "C:\\AppData" } });
   assert.equal(winPaths.appDir, "C:\\AppData\\Trae CN");
   assert.equal(winPaths.dbPath, "C:\\AppData\\Trae CN\\ModularData\\ai-agent\\database.db");
+
+  const list = resolveTraeCnPathsList({ home: "C:\\Users\\test", platform: "win32", env: { APPDATA: "C:\\AppData" } });
+  assert.equal(list.length, 8);
+  const traeWorkCn = list.find((c) => c.dirName === "Trae Work CN");
+  assert.ok(traeWorkCn);
+  assert.equal(traeWorkCn.appDir, "C:\\AppData\\Trae Work CN");
+  assert.equal(traeWorkCn.dbPath, "C:\\AppData\\Trae Work CN\\ModularData\\ai-agent\\database.db");
+
+  const traeSoloCn = list.find((c) => c.dirName === "TRAE SOLO CN");
+  assert.ok(traeSoloCn);
+  assert.equal(traeSoloCn.appDir, "C:\\AppData\\TRAE SOLO CN");
 });
 
 test("SQLCipher 4 pure JS decryption and HMAC validation verification", () => {
